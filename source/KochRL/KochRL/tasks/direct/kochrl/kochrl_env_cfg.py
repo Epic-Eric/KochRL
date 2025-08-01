@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG
+from koch import KOCH_CFG
 
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg
@@ -11,38 +11,73 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
+""" 
+ACTION SPACE:
+[output_q] (6)
+"""
+
+"""
+OBSERVATION SPACE:
+Joint positions: q = [q1, q2, ..., q6] (6)
+Joint velocities: q_dot = [q_dot1, q_dot2, ..., q_dot6] (6)
+
+End-effector position: [x, y, z] (3)
+End-effector keypoints position: [x1, y1, z1], [x2, y2, z2], [x3, y3, z3] (9)
+End-effector linear velocity: [vx, vy, vz] (3)
+End-effector angular velocity: [wx, wy, wz] (3)
+
+Target relative Cartesian position: [x_target_err, y_target_err, z_target_err] (3)
+Target relative Cartesian keypoints position: [x1_target_err, y1_target_err, z1_target_err], [x2_target_err, y2_target_err, z2_target_err], [x3_target_err, y3_target_err, z3_target_err] (9)
+
+Desired stiffness parameter: k_desired (1)
+Previous action: action_prev (6)
+
+Total: 49
+"""
+
+
 
 @configclass
 class KochrlEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 5.0
+    episode_length_s = 20.0
     # - spaces definition
-    action_space = 1
-    observation_space = 4
+    action_space = 6
+    observation_space = 49
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     # robot(s)
-    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg: ArticulationCfg = KOCH_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=1.0, replicate_physics=True)
 
     # custom parameters/scales
     # - controllable joint
-    cart_dof_name = "slider_to_cart"
-    pole_dof_name = "cart_to_pole"
-    # - action scale
-    action_scale = 100.0  # [N]
+    # shoulder_pan = "joint_1"
+    # shoulder_lift = "joint_2"
+    # elbow_flex = "joint_3"
+    # wrist_flex = "joint_4"
+    # wrist_roll = "joint_5"
+    # gripper = "joint_6"
+    joints = "joint_[1-6]"
+   
     # - reward scales
-    rew_scale_alive = 1.0
-    rew_scale_terminated = -2.0
-    rew_scale_pole_pos = -1.0
-    rew_scale_cart_vel = -0.01
-    rew_scale_pole_vel = -0.005
+    rew_position_err = 0.2
+    rew_vel_penalty = 0.0001
+    rew_acc_penalty = 0.0001
+    rew_out_of_bound_penalty = 10
+    # rew_ref_pos_err = 0.1
+    # rew_ref_vel_err = 0.075
     # - reset states/conditions
-    initial_pole_angle_range = [-0.25, 0.25]  # pole angle sample range on reset [rad]
-    max_cart_pos = 3.0  # reset if cart exceeds this position [m]
+    shoulder_pan_reset_angles = [0, 6.28]  # sample range on reset [rad]
+    shoulder_lift_reset_angles = [2.46, 4.71]
+    elbow_flex_reset_angles = [1.57, 4.92]
+    wrist_flex_reset_angles = [2.79, 6.28]
+    wrist_roll_reset_angles = [0, 6.28]
+    gripper_reset_angles = [4.6, 6.49]
+    total_reset_angles = [shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles]

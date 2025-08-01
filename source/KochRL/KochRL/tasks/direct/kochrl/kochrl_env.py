@@ -16,6 +16,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
 from .kochrl_env_cfg import KochrlEnvCfg
+from helper import clamp_actions
 
 
 class KochrlEnv(DirectRLEnv):
@@ -24,11 +25,25 @@ class KochrlEnv(DirectRLEnv):
     def __init__(self, cfg: KochrlEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
-        self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
-
+        # Joint space
+        self._joints_idx, _ = self.robot.find_joints(self.cfg.joints)
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
+
+        # Cartesian space
+        ee_body_idx = self.robot.find_bodies("link_6")[0][0]
+        self.ee_body_pos = self.robot.data.body_pos_w[:, ee_body_idx, :]
+        self.ee_linear_vel = self.robot.data.body_vel_w[:, ee_body_idx, :3]
+        self.ee_angular_vel = self.robot.data.body_vel_w[:, ee_body_idx, 3:]
+        self.keypoints = [list, list, list]
+
+        # Task
+        self.target_err = []
+        self.target_keypoint_err = [list, list, list]
+        self.k_stiffness: float
+
+        # Other
+        self.prev_action = []
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -49,7 +64,8 @@ class KochrlEnv(DirectRLEnv):
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        self.restrained_actions = clamp_actions(self.actions + self.joint_pos, self.cfg.total_reset_angles)
+        self.robot.set_joint_position_target(self.restrained_actions, joint_ids=self._joints_idx)
 
     def _get_observations(self) -> dict:
         obs = torch.cat(

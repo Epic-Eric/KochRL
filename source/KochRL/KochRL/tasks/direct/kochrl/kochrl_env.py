@@ -16,7 +16,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from helper import clamp_actions
+from helper import clamp_actions, is_out_of_bound
 
 
 class KochrlEnv(DirectRLEnv):
@@ -26,24 +26,24 @@ class KochrlEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Joint space
-        self._joints_idx, _ = self.robot.find_joints(self.cfg.joints)
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        self._joints_idx, _ = self.robot.find_joints(self.cfg.joints) # shape (,6)
+        self.joint_pos = self.robot.data.joint_pos # shape (4096,6)
+        self.joint_vel = self.robot.data.joint_vel # shape (4096,6)
+        self.joint_acc = self.robot.data.joint_acc # shape (4096,6)
 
         # Cartesian space
-        ee_body_idx = self.robot.find_bodies("link_6")[0][0]
-        self.ee_body_pos = self.robot.data.body_pos_w[:, ee_body_idx, :]
-        self.ee_linear_vel = self.robot.data.body_vel_w[:, ee_body_idx, :3]
-        self.ee_angular_vel = self.robot.data.body_vel_w[:, ee_body_idx, 3:]
-        self.keypoints = [list, list, list]
-
+        self.ee_body_idx = self.robot.find_bodies("link_6")[0][0]
+        self.ee_body_pos = self.robot.data.body_pos_w[:, self.ee_body_idx, :] # shape (4096, 7)
+        self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3] # shape (4096,3)
+        self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:] # shape (4096,3)
+        self.keypoints:torch.tensor #shape (4096, 9)
         # Task
-        self.target_err = []
-        self.target_keypoint_err = [list, list, list]
-        self.k_stiffness: float
+        self.target_err:torch.tensor # shape (4096,3)
+        self.target_keypoint_err:torch.tensor # shape (4096,9)
+        self.k_stiffness: float # shape (4096,1)
 
         # Other
-        self.prev_action = []
+        self.prev_action:torch.tensor # shape (4096,6)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -69,11 +69,24 @@ class KochrlEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
-            (
-                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
+            (   
+                # Joint space
+                self.joint_pos[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+                self.joint_vel[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+
+                # Cartesian space
+                self.ee_body_pos,
+                self.ee_linear_vel,
+                self.ee_angular_vel,
+                self.keypoints,
+
+                # Task params
+                self.target_err,
+                self.target_keypoint_err,
+                self.k_stiffness.unsqueeze(dim=1),
+
+                # Other
+                self.prev_action
             ),
             dim=-1,
         )
@@ -82,22 +95,28 @@ class KochrlEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         total_reward = compute_rewards(
-            self.cfg.rew_scale_alive,
-            self.cfg.rew_scale_terminated,
-            self.cfg.rew_scale_pole_pos,
-            self.cfg.rew_scale_cart_vel,
-            self.cfg.rew_scale_pole_vel,
-            self.joint_pos[:, self._pole_dof_idx[0]],
-            self.joint_vel[:, self._pole_dof_idx[0]],
-            self.joint_pos[:, self._cart_dof_idx[0]],
-            self.joint_vel[:, self._cart_dof_idx[0]],
-            self.reset_terminated,
+            self.cfg.rew_position_err,
+            self.cfg.rew_vel_penalty,
+            self.cfg.rew_acc_penalty,
+            self.cfg.rew_out_of_bound_penalty,
+            self.target_keypoint_err,
+            self.joint_pos[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+            self.joint_vel[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+            self.joint_acc[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+            self.cfg.total_reset_angles
         )
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        # Updates
+        ## Joint space
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
+        self.joint_acc = self.robot.data.joint_acc
+        ## Cartesian space
+        self.ee_body_pos = self.robot.data.body_pos_w[:, self.ee_body_idx, :]
+        self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3]
+        self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:]
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         out_of_bounds = torch.any(torch.abs(self.joint_pos[:, self._cart_dof_idx]) > self.cfg.max_cart_pos, dim=1)
@@ -131,21 +150,20 @@ class KochrlEnv(DirectRLEnv):
 
 @torch.jit.script
 def compute_rewards(
-    rew_scale_alive: float,
-    rew_scale_terminated: float,
-    rew_scale_pole_pos: float,
-    rew_scale_cart_vel: float,
-    rew_scale_pole_vel: float,
-    pole_pos: torch.Tensor,
-    pole_vel: torch.Tensor,
-    cart_pos: torch.Tensor,
-    cart_vel: torch.Tensor,
-    reset_terminated: torch.Tensor,
+    rew_scale_pos_err: float,
+    rew_scale_vel_penalty: float,
+    rew_scale_acc_penalty: float,
+    rew_scale_out_of_bound_penalty: float,
+    target_keypoint_err: torch.Tensor,
+    joints_pos: torch.Tensor,
+    joints_vel: torch.Tensor,
+    joints_acc: torch.Tensor,
+    joints_pos_limit: torch.Tensor
 ):
-    rew_alive = rew_scale_alive * (1.0 - reset_terminated.float())
-    rew_termination = rew_scale_terminated * reset_terminated.float()
-    rew_pole_pos = rew_scale_pole_pos * torch.sum(torch.square(pole_pos).unsqueeze(dim=1), dim=-1)
-    rew_cart_vel = rew_scale_cart_vel * torch.sum(torch.abs(cart_vel).unsqueeze(dim=1), dim=-1)
-    rew_pole_vel = rew_scale_pole_vel * torch.sum(torch.abs(pole_vel).unsqueeze(dim=1), dim=-1)
-    total_reward = rew_alive + rew_termination + rew_pole_pos + rew_cart_vel + rew_pole_vel
+    rew_pos_err = torch.sum(torch.square(target_keypoint_err).unsqueeze(dim=1), dim=-1) * rew_scale_pos_err
+    rew_vel_penalty = torch.sum(torch.square(joints_vel).unsqueeze(dim=1), dim=-1) * rew_scale_vel_penalty
+    rew_acc_penalty = torch.sum(torch.square(joints_acc).unsqueeze(dim=1), dim=-1) * rew_scale_acc_penalty
+    rew_out_of_bound = is_out_of_bound(joints_pos, joints_pos_limit) * rew_scale_out_of_bound_penalty
+
+    total_reward = rew_pos_err + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound
     return total_reward

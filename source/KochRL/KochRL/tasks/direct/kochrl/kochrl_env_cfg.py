@@ -10,6 +10,7 @@ from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
+import torch
 
 """ 
 ACTION SPACE:
@@ -21,7 +22,7 @@ OBSERVATION SPACE:
 Joint positions: q = [q1, q2, ..., q6] (6)
 Joint velocities: q_dot = [q_dot1, q_dot2, ..., q_dot6] (6)
 
-End-effector position: [x, y, z] (3)
+End-effector position: [x, y, z, qx, qy, qz, qw] (7)
 End-effector keypoints position: [x1, y1, z1], [x2, y2, z2], [x3, y3, z3] (9)
 End-effector linear velocity: [vx, vy, vz] (3)
 End-effector angular velocity: [wx, wy, wz] (3)
@@ -32,7 +33,7 @@ Target relative Cartesian keypoints position: [x1_target_err, y1_target_err, z1_
 Desired stiffness parameter: k_desired (1)
 Previous action: action_prev (6)
 
-Total: 49
+Total: 53
 """
 
 
@@ -44,7 +45,7 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     episode_length_s = 20.0
     # - spaces definition
     action_space = 6
-    observation_space = 49
+    observation_space = 53
     state_space = 0
 
     # simulation
@@ -67,10 +68,10 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     joints = "joint_[1-6]"
    
     # - reward scales
-    rew_position_err = 0.2
-    rew_vel_penalty = 0.0001
-    rew_acc_penalty = 0.0001
-    rew_out_of_bound_penalty = 10
+    rew_position_err = -0.2
+    rew_vel_penalty = -0.0001
+    rew_acc_penalty = -0.0001
+    rew_out_of_bound_penalty = -10
     # rew_ref_pos_err = 0.1
     # rew_ref_vel_err = 0.075
     # - reset states/conditions
@@ -80,4 +81,4 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     wrist_flex_reset_angles = [2.79, 6.28]
     wrist_roll_reset_angles = [0, 6.28]
     gripper_reset_angles = [4.6, 6.49]
-    total_reset_angles = [shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles]
+    total_reset_angles = torch.tensor([shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles])

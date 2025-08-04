@@ -43,6 +43,12 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 20.0
+    sample_per_episode = 4
+    # workspace
+    workspace_x = [-0.3, 0.3]
+    workspace_y = [-0.3, 0.3]
+    workspace_z = [0.0, 0.3]
+    stiffness_range = [0.0, 100.0]
     # - spaces definition
     action_space = 6
     observation_space = 53

@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 from __future__ import annotations
 
 import math
@@ -16,7 +11,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from helper import clamp_actions, is_out_of_bound
+from helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness
 
 
 class KochrlEnv(DirectRLEnv):
@@ -26,24 +21,34 @@ class KochrlEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # Joint space
-        self._joints_idx, _ = self.robot.find_joints(self.cfg.joints) # shape (,6)
-        self.joint_pos = self.robot.data.joint_pos # shape (4096,6)
-        self.joint_vel = self.robot.data.joint_vel # shape (4096,6)
-        self.joint_acc = self.robot.data.joint_acc # shape (4096,6)
+        self._joints_idx, _ = self.robot.find_joints(self.cfg.joints)
+        self.num_joints = len(self._joints_idx)
+        
+        # Initialize tensors with proper shapes
+        self.joint_pos = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
+        self.joint_vel = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
+        self.joint_acc = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
 
         # Cartesian space
         self.ee_body_idx = self.robot.find_bodies("link_6")[0][0]
-        self.ee_body_pos = self.robot.data.body_pos_w[:, self.ee_body_idx, :] # shape (4096, 7)
-        self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3] # shape (4096,3)
-        self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:] # shape (4096,3)
-        self.keypoints:torch.tensor #shape (4096, 9)
+        self.ee_body_pos = torch.zeros((self.num_envs, 7), device=self.device)
+        self.ee_linear_vel = torch.zeros((self.num_envs, 3), device=self.device)
+        self.ee_angular_vel = torch.zeros((self.num_envs, 3), device=self.device)
+        self.keypoints = torch.zeros((self.num_envs, 9), device=self.device)
+        
         # Task
-        self.target_err:torch.tensor # shape (4096,3)
-        self.target_keypoint_err:torch.tensor # shape (4096,9)
-        self.k_stiffness: float # shape (4096,1)
+        self.sampled_target_pos = torch.zeros((self.num_envs, 7), device=self.device)
+        self.target_err = torch.zeros((self.num_envs, 3), device=self.device)
+        self.target_keypoint_err = torch.zeros((self.num_envs, 9), device=self.device)
+        self.k_stiffness = torch.zeros((self.num_envs, 1), device=self.device)
 
         # Other
-        self.prev_action:torch.tensor # shape (4096,6)
+        self.prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
+        self.actions = torch.zeros((self.num_envs, self.num_joints), device=self.device)
+        
+        # Sample tracking
+        self.samples_per_episode = self.cfg.sample_per_episode
+        self.steps_per_sample = int(self.cfg.max_episode_length / self.samples_per_episode)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -64,29 +69,32 @@ class KochrlEnv(DirectRLEnv):
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
-        self.restrained_actions = clamp_actions(self.actions + self.joint_pos, self.cfg.total_reset_angles)
-        self.robot.set_joint_position_target(self.restrained_actions, joint_ids=self._joints_idx)
+        # Actions are delta joint positions, add to current positions, and clamp to limits
+        self.clamped_targets = clamp_actions(self.actions + self.joint_pos[:, self._joints_idx], self.cfg.total_reset_angles)
+        
+        # Set joint position targets
+        self.robot.set_joint_position_target(self.clamped_targets, joint_ids=self._joints_idx)
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
             (   
-                # Joint space
-                self.joint_pos[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
-                self.joint_vel[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+                # Joint space (12)
+                self.joint_pos[:, self._joints_idx],
+                self.joint_vel[:, self._joints_idx],
 
-                # Cartesian space
-                self.ee_body_pos,
-                self.ee_linear_vel,
-                self.ee_angular_vel,
-                self.keypoints,
+                # Cartesian space (22)
+                self.ee_body_pos,        # 7
+                self.ee_linear_vel,      # 3
+                self.ee_angular_vel,     # 3
+                self.keypoints,          # 9
 
-                # Task params
-                self.target_err,
-                self.target_keypoint_err,
-                self.k_stiffness.unsqueeze(dim=1),
+                # Task params (13)
+                self.target_err,         # 3
+                self.target_keypoint_err,# 9
+                self.k_stiffness,        # 1
 
-                # Other
-                self.prev_action
+                # Other (6)
+                self.prev_action         # 6
             ),
             dim=-1,
         )
@@ -100,27 +108,55 @@ class KochrlEnv(DirectRLEnv):
             self.cfg.rew_acc_penalty,
             self.cfg.rew_out_of_bound_penalty,
             self.target_keypoint_err,
-            self.joint_pos[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
-            self.joint_vel[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
-            self.joint_acc[:, self._joints_idx[0]:self._joints_idx[len(self._joints_idx)-1]],
+            self.joint_pos[:, self._joints_idx],
+            self.joint_vel[:, self._joints_idx],
+            self.joint_acc[:, self._joints_idx],
             self.cfg.total_reset_angles
         )
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Updates
-        ## Joint space
+        # Updates - get fresh data from simulation
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
         self.joint_acc = self.robot.data.joint_acc
-        ## Cartesian space
+        
+        # Cartesian space
         self.ee_body_pos = self.robot.data.body_pos_w[:, self.ee_body_idx, :]
         self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3]
         self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:]
+        self.keypoints = get_keypoints(self.ee_body_pos)
+        
+        # Task - compute errors
+        self.target_err = self.ee_body_pos[:, :3] - self.sampled_target_pos
+        self.target_keypoint_err = self.keypoints - get_keypoints(self.sampled_target_pos)
+        
+        # Store previous action
+        self.prev_action = self.actions.clone()
 
+        # Resample target and stiffness at specified intervals
+        current_step = self.episode_length_buf
+        if (current_step > 0 and (current_step + 1)% self.steps_per_sample == 0):
+            # sample new targets for all environments
+            temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z)
+            for i in range(self.num_envs):
+                # first 3 pos xyz
+                self.sampled_target_pos[i, :3] = (self.scene.env_origins[i] + temp[:3])
+                # last 4 quat xyzw
+                self.sampled_target_pos[i, 3:] = temp[3:]
+
+            self.k_stiffness = sample_stiffness(self.cfg.stiffness_range, self.num_envs).to(self.device)
+
+        # Check termination conditions
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        out_of_bounds = torch.any(torch.abs(self.joint_pos[:, self._cart_dof_idx]) > self.cfg.max_cart_pos, dim=1)
-        out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
+        
+        # Check if joints are out of bounds
+        out_of_bounds = is_out_of_bound(self.joint_pos[:, self._joints_idx], self.cfg.total_reset_angles)
+        
+        # Check if end effector is below ground
+        ee_below_ground = self.ee_body_pos[:, 2] <= 0.0
+        out_of_bounds = out_of_bounds | ee_below_ground
+        
         return out_of_bounds, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -128,21 +164,48 @@ class KochrlEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
-        joint_pos[:, self._pole_dof_idx] += sample_uniform(
-            self.cfg.initial_pole_angle_range[0] * math.pi,
-            self.cfg.initial_pole_angle_range[1] * math.pi,
-            joint_pos[:, self._pole_dof_idx].shape,
-            joint_pos.device,
+        # Sample random joint positions within limits
+        joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
+        limits = self.cfg.total_reset_angles
+        
+        # Create proper min/max tensors
+        min_limits = torch.tensor([limits[i][0] for i in range(self.num_joints)], device=self.device, dtype=torch.float32)
+        max_limits = torch.tensor([limits[i][1] for i in range(self.num_joints)], device=self.device, dtype=torch.float32)
+        
+        # Sample uniform random positions
+        joint_pos[:, self._joints_idx] = sample_uniform(
+            min_limits,
+            max_limits,
+            joint_pos[:, self._joints_idx].shape,
+            self.device
         )
+        
         joint_vel = self.robot.data.default_joint_vel[env_ids]
 
-        default_root_state = self.robot.data.default_root_state[env_ids]
+        # Set root state
+        default_root_state = self.robot.data.default_root_state[env_ids].clone()
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
 
+        # Update internal state
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
-
+        self.joint_acc[env_ids] = 0.0
+        
+        # Reset task parameters
+        temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z)
+        for i, env_id in enumerate(env_ids):
+            # first 3 pos xyz
+            self.sampled_target_pos[env_id, :3] = (self.scene.env_origins[env_id] +  temp[:3])
+            # last 4 quat xyzw
+            self.sampled_target_pos[env_id, 3:] = temp[3:]
+        
+        self.k_stiffness[env_ids] = sample_stiffness(self.cfg.stiffness_range, len(env_ids)).to(self.device)
+        
+        # Reset other states
+        self.prev_action[env_ids] = 0.0
+        self.actions[env_ids] = 0.0
+        
+        # Write to simulation
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
@@ -159,11 +222,18 @@ def compute_rewards(
     joints_vel: torch.Tensor,
     joints_acc: torch.Tensor,
     joints_pos_limit: torch.Tensor
-):
-    rew_pos_err = torch.sum(torch.square(target_keypoint_err).unsqueeze(dim=1), dim=-1) * rew_scale_pos_err
-    rew_vel_penalty = torch.sum(torch.square(joints_vel).unsqueeze(dim=1), dim=-1) * rew_scale_vel_penalty
-    rew_acc_penalty = torch.sum(torch.square(joints_acc).unsqueeze(dim=1), dim=-1) * rew_scale_acc_penalty
-    rew_out_of_bound = is_out_of_bound(joints_pos, joints_pos_limit) * rew_scale_out_of_bound_penalty
+) -> torch.Tensor:
+    # Position error 
+    rew_pos_err = torch.sum(torch.square(target_keypoint_err), dim=-1) * rew_scale_pos_err
+    
+    # Velocity penalty
+    rew_vel_penalty = torch.sum(torch.square(joints_vel), dim=-1) * rew_scale_vel_penalty
+    
+    # Acceleration penalty
+    rew_acc_penalty = torch.sum(torch.square(joints_acc), dim=-1) * rew_scale_acc_penalty
+    
+    # Out of bounds penalty
+    rew_out_of_bound = is_out_of_bound(joints_pos, joints_pos_limit).float() * rew_scale_out_of_bound_penalty
 
     total_reward = rew_pos_err + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound
     return total_reward

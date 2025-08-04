@@ -43,7 +43,7 @@ KOCH_CFG = ArticulationCfg(
             damping=1,
         ),
         "koch_arm": ImplicitActuatorCfg( #XL330-M288-T
-            joint_names_expr=["panda_joint[3-6]"],
+            joint_names_expr=["joint_[3-6]"],
             effort_limit=0.26, #Nm
             velocity_limit=10.786, #rad/s
             stiffness=10,

@@ -11,7 +11,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness
+from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness
 
 
 class KochrlEnv(DirectRLEnv):
@@ -48,7 +48,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Sample tracking
         self.samples_per_episode = self.cfg.sample_per_episode
-        self.steps_per_sample = int(self.cfg.max_episode_length / self.samples_per_episode)
+        self.steps_per_sample = int(self.max_episode_length / self.samples_per_episode)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -122,13 +122,13 @@ class KochrlEnv(DirectRLEnv):
         self.joint_acc = self.robot.data.joint_acc
         
         # Cartesian space
-        self.ee_body_pos = self.robot.data.body_pos_w[:, self.ee_body_idx, :]
+        self.ee_body_pos = self.robot.data.body_pose_w[:, self.ee_body_idx, :]
         self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3]
         self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:]
         self.keypoints = get_keypoints(self.ee_body_pos)
         
         # Task - compute errors
-        self.target_err = self.ee_body_pos[:, :3] - self.sampled_target_pos
+        self.target_err = self.ee_body_pos[:, :3] - self.sampled_target_pos[:, :3]
         self.target_keypoint_err = self.keypoints - get_keypoints(self.sampled_target_pos)
         
         # Store previous action
@@ -136,16 +136,17 @@ class KochrlEnv(DirectRLEnv):
 
         # Resample target and stiffness at specified intervals
         current_step = self.episode_length_buf
-        if (current_step > 0 and (current_step + 1)% self.steps_per_sample == 0):
+        resample_mask = (current_step > 0) & ((current_step + 1) % self.steps_per_sample == 0)
+        if (torch.any(resample_mask)):
+            resample_list = torch.where(resample_mask)[0]
             # sample new targets for all environments
             temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z)
-            for i in range(self.num_envs):
-                # first 3 pos xyz
-                self.sampled_target_pos[i, :3] = (self.scene.env_origins[i] + temp[:3])
-                # last 4 quat xyzw
-                self.sampled_target_pos[i, 3:] = temp[3:]
-
-            self.k_stiffness = sample_stiffness(self.cfg.stiffness_range, self.num_envs).to(self.device)
+            # first 3 pos xyz
+            self.sampled_target_pos[resample_list, :3] = (self.scene.env_origins[resample_list] + temp[:3])
+            # last 4 quat xyzw
+            self.sampled_target_pos[resample_list, 3:] = temp[3:]
+            # stiffness
+            self.k_stiffness[resample_list] = sample_stiffness(self.cfg.stiffness_range, len(resample_list)).to(self.device)
 
         # Check termination conditions
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -169,8 +170,8 @@ class KochrlEnv(DirectRLEnv):
         limits = self.cfg.total_reset_angles
         
         # Create proper min/max tensors
-        min_limits = torch.tensor([limits[i][0] for i in range(self.num_joints)], device=self.device, dtype=torch.float32)
-        max_limits = torch.tensor([limits[i][1] for i in range(self.num_joints)], device=self.device, dtype=torch.float32)
+        min_limits = limits[:, 0].unsqueeze(0).expand(len(env_ids), -1)
+        max_limits = limits[:, 1].unsqueeze(0).expand(len(env_ids), -1)
         
         # Sample uniform random positions
         joint_pos[:, self._joints_idx] = sample_uniform(
@@ -192,7 +193,7 @@ class KochrlEnv(DirectRLEnv):
         self.joint_acc[env_ids] = 0.0
         
         # Reset task parameters
-        temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z)
+        temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z).to(self.device)
         for i, env_id in enumerate(env_ids):
             # first 3 pos xyz
             self.sampled_target_pos[env_id, :3] = (self.scene.env_origins[env_id] +  temp[:3])

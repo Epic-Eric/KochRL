@@ -13,7 +13,7 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 KOCH_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path="follower.usd",
+        usd_path="/home/asblab/ericxie/KochRL/source/KochRL/KochRL/tasks/direct/kochrl/follower.usd",
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
@@ -26,12 +26,12 @@ KOCH_CFG = ArticulationCfg(
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         joint_pos={
-            "joint_1": 3.14,
-            "joint_2": 3.14,
-            "joint_3": 3.05,
-            "joint_4": 3.14,
-            "joint_5": 6.28,
-            "joint_6": 4.6
+            "joint_1": 0,
+            "joint_2": 0,
+            "joint_3": 0,
+            "joint_4": -3.13,
+            "joint_5": 0,
+            "joint_6": 0
         },
     ),
     actuators={

@@ -167,17 +167,17 @@ class KochrlEnv(DirectRLEnv):
 
         # Sample random joint positions within limits
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
-        limits = self.cfg.total_reset_angles
+        limits = self.cfg.total_reset_angles.to(self.device)
         
         # Create proper min/max tensors
         min_limits = limits[:, 0].unsqueeze(0).expand(len(env_ids), -1)
         max_limits = limits[:, 1].unsqueeze(0).expand(len(env_ids), -1)
         
         # Sample uniform random positions
-        joint_pos[:, self._joints_idx] = sample_uniform(
+        joint_pos = sample_uniform(
             min_limits,
             max_limits,
-            joint_pos[:, self._joints_idx].shape,
+            joint_pos.shape,
             self.device
         )
         

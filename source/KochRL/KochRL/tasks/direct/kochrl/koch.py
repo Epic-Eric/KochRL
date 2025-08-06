@@ -37,15 +37,15 @@ KOCH_CFG = ArticulationCfg(
     actuators={
         "koch_base": ImplicitActuatorCfg( #XL430-W250-T
             joint_names_expr=["joint_[1-2]"],
-            effort_limit=0.28,
-            velocity_limit=5.969, 
+            effort_limit_sim=0.28,
+            velocity_limit_sim=5.969, 
             stiffness=10,
             damping=1,
         ),
         "koch_arm": ImplicitActuatorCfg( #XL330-M288-T
             joint_names_expr=["joint_[3-6]"],
-            effort_limit=0.26, #Nm
-            velocity_limit=10.786, #rad/s
+            effort_limit_sim=0.26, #Nm
+            velocity_limit_sim=10.786, #rad/s
             stiffness=10,
             damping=1,
         ),

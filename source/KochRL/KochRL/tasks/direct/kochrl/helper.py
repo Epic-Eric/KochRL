@@ -7,6 +7,7 @@ def clamp_actions(l1: torch.Tensor, limits: torch.Tensor) -> torch.Tensor:
     assert num_joints == len(limits), f"Joint count mismatch: {num_joints} vs {len(limits)}"
     
     # create min/max tensors with proper shape for broadcasting
+    limits = limits.to(l1.device) 
     min_limits = limits[:, 0].unsqueeze(0).expand(batch_size, -1)
     max_limits = limits[:, 1].unsqueeze(0).expand(batch_size, -1)
     
@@ -16,6 +17,7 @@ def is_out_of_bound(l1: torch.Tensor, limits: torch.Tensor) -> torch.Tensor:
     batch_size = l1.shape[0]
     num_joints = l1.shape[1]
     assert num_joints == len(limits), f"Joint count mismatch: {num_joints} vs {len(limits)}"
+    limits = limits.to(l1.device) 
     min_limits = limits[:, 0].unsqueeze(0).expand(batch_size, -1)
     max_limits = limits[:, 1].unsqueeze(0).expand(batch_size, -1)
     

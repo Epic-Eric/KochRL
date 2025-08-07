@@ -140,7 +140,7 @@ class KochrlEnv(DirectRLEnv):
         if (torch.any(resample_mask)):
             resample_list = torch.where(resample_mask)[0]
             # sample new targets for all environments
-            temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z)
+            temp = sample_target_point(self.cfg.workspace_x, self.cfg.workspace_y, self.cfg.workspace_z).to(self.device)
             # first 3 pos xyz
             self.sampled_target_pos[resample_list, :3] = (self.scene.env_origins[resample_list] + temp[:3])
             # last 4 quat xyzw

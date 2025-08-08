@@ -26,12 +26,12 @@ KOCH_CFG = ArticulationCfg(
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         joint_pos={
-            "joint_1": 0,
-            "joint_2": 0,
-            "joint_3": 0,
-            "joint_4": -3.13,
-            "joint_5": 0,
-            "joint_6": 0
+            "joint_1": 0.0,
+            "joint_2": 0.0,
+            "joint_3": 0.0,
+            "joint_4": 0.0,
+            "joint_5": 0.0,
+            "joint_6": 0.0
         },
     ),
     actuators={

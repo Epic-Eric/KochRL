@@ -23,6 +23,7 @@ class KochrlEnv(DirectRLEnv):
         # Joint space
         self._joints_idx, _ = self.robot.find_joints(self.cfg.joints)
         self.num_joints = len(self._joints_idx)
+        self.total_reset_angles = torch.tensor(self.cfg.total_reset_angles, device=self.device)
         
         # Initialize tensors with proper shapes
         self.joint_pos = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
@@ -70,7 +71,7 @@ class KochrlEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         # Actions are delta joint positions, add to current positions, and clamp to limits
-        self.clamped_targets = clamp_actions(self.actions + self.joint_pos[:, self._joints_idx], self.cfg.total_reset_angles)
+        self.clamped_targets = clamp_actions(self.actions + self.joint_pos[:, self._joints_idx], self.total_reset_angles)
         
         # Set joint position targets
         self.robot.set_joint_position_target(self.clamped_targets, joint_ids=self._joints_idx)
@@ -111,7 +112,7 @@ class KochrlEnv(DirectRLEnv):
             self.joint_pos[:, self._joints_idx],
             self.joint_vel[:, self._joints_idx],
             self.joint_acc[:, self._joints_idx],
-            self.cfg.total_reset_angles
+            self.total_reset_angles
         )
         return total_reward
 
@@ -152,7 +153,7 @@ class KochrlEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         
         # Check if joints are out of bounds
-        out_of_bounds = is_out_of_bound(self.joint_pos[:, self._joints_idx], self.cfg.total_reset_angles)
+        out_of_bounds = is_out_of_bound(self.joint_pos[:, self._joints_idx], self.total_reset_angles)
         
         # Check if end effector is below ground
         ee_below_ground = self.ee_body_pos[:, 2] <= 0.0
@@ -167,7 +168,7 @@ class KochrlEnv(DirectRLEnv):
 
         # Sample random joint positions within limits
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
-        limits = self.cfg.total_reset_angles.to(self.device)
+        limits = self.total_reset_angles.to(self.device)
         
         # Create proper min/max tensors
         min_limits = limits[:, 0].unsqueeze(0).expand(len(env_ids), -1)

@@ -82,4 +82,4 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     wrist_flex_reset_angles = [-2.059, 1.815] #[2.79, 6.28]
     wrist_roll_reset_angles = [-3.140, 3.140] #[0, 6.28]
     gripper_reset_angles = [-1.745, 0.0873] #[4.6, 6.49]
-    total_reset_angles = torch.tensor([shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles])
+    total_reset_angles = [shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles]

@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import isaaclab.sim as sim_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 def clamp_actions(l1: torch.Tensor, limits: torch.Tensor) -> torch.Tensor:
     batch_size = l1.shape[0]
@@ -93,11 +95,10 @@ def sample_target_point(workspace_x:list, workspace_y:list, workspace_z:list) ->
     x = torch.FloatTensor(1).uniform_(workspace_x[0], workspace_x[1])
     y = torch.FloatTensor(1).uniform_(workspace_y[0], workspace_y[1])
     z = torch.FloatTensor(1).uniform_(workspace_z[0], workspace_z[1])
-    # Sample a random quaternion for the target point
-    # Sample 3 uniform random numbers
+    
+    # Sample a random quaternion using Marsaglia's method
     u1, u2, u3 = np.random.uniform(0, 1, 3)
     
-    # Marsaglia's method
     sqrt1_u1 = np.sqrt(1 - u1)
     sqrt_u1 = np.sqrt(u1)
     
@@ -105,10 +106,40 @@ def sample_target_point(workspace_x:list, workspace_y:list, workspace_z:list) ->
     qx = sqrt1_u1 * np.cos(2 * np.pi * u2)
     qy = sqrt_u1 * np.sin(2 * np.pi * u3)
     qz = sqrt_u1 * np.cos(2 * np.pi * u3)
-    return torch.tensor([x.item(), y.item(), z.item(), qw, qx, qy, qz], dtype=torch.float32)
+    
+    # Create quaternion tensor and normalize to ensure unit length
+    quat = torch.tensor([qx, qy, qz, qw], dtype=torch.float32)
+    quat = quat / torch.norm(quat)  # Ensure unit quaternion
+    
+    return torch.tensor([x.item(), y.item(), z.item(), quat[0], quat[1], quat[2], quat[3]], dtype=torch.float32)
 
 def sample_stiffness(stiffness_range:list, num_envs) -> torch.Tensor:
     """
     Sample a list of shape (num_envs, 1) with random stiffness values
     """
     return torch.FloatTensor(num_envs, 1).uniform_(stiffness_range[0], stiffness_range[1])
+
+def detect_self_collision(robot_articulation) -> torch.Tensor:
+    """Detect self-collision by checking contact sensor data."""
+    contact_data = robot_articulation.data.contact_force_matrix_w
+    contact_threshold = 0.1
+    contact_magnitudes = torch.norm(contact_data, dim=-1)
+    return torch.any(contact_magnitudes > contact_threshold, dim=-1)
+
+def setup_target_markers() -> VisualizationMarkers:
+    """Setup a single visualization marker instance that can handle multiple environments."""
+    marker_cfg = VisualizationMarkersCfg(
+        prim_path="Visuals/TargetMarkers",
+        markers={
+            "target_sphere": sim_utils.SphereCfg(
+                radius=0.02,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.0),
+            ),
+            "target_frame": sim_utils.CylinderCfg(
+                radius=0.005,
+                height=0.1,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.0),
+            ),
+        }
+    )
+    return VisualizationMarkers(marker_cfg)

@@ -5,14 +5,14 @@ import torch
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness
-
+from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, detect_self_collision
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -51,6 +51,9 @@ class KochrlEnv(DirectRLEnv):
         self.samples_per_episode = self.cfg.sample_per_episode
         self.steps_per_sample = int(self.max_episode_length / self.samples_per_episode)
 
+        # Visualization markers
+        self.target_markers:VisualizationMarkers
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
@@ -65,7 +68,9 @@ class KochrlEnv(DirectRLEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
+        # add markers
+        self.target_markers = setup_target_markers()
+        
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
 
@@ -148,7 +153,8 @@ class KochrlEnv(DirectRLEnv):
             self.sampled_target_pos[resample_list, 3:] = temp[3:]
             # stiffness
             self.k_stiffness[resample_list] = sample_stiffness(self.cfg.stiffness_range, len(resample_list)).to(self.device)
-
+            # update target markers
+            self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         # Check termination conditions
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         
@@ -166,22 +172,8 @@ class KochrlEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        # Sample random joint positions within limits
+        # Sample random joint positions and velocityies within limits
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
-        limits = self.total_reset_angles.to(self.device)
-        
-        # Create proper min/max tensors
-        min_limits = limits[:, 0].unsqueeze(0).expand(len(env_ids), -1)
-        max_limits = limits[:, 1].unsqueeze(0).expand(len(env_ids), -1)
-        
-        # Sample uniform random positions
-        joint_pos = sample_uniform(
-            min_limits,
-            max_limits,
-            joint_pos.shape,
-            self.device
-        )
-        
         joint_vel = self.robot.data.default_joint_vel[env_ids]
 
         # Set root state
@@ -202,6 +194,8 @@ class KochrlEnv(DirectRLEnv):
             self.sampled_target_pos[env_id, 3:] = temp[3:]
         
         self.k_stiffness[env_ids] = sample_stiffness(self.cfg.stiffness_range, len(env_ids)).to(self.device)
+        # update target markers
+        self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         
         # Reset other states
         self.prev_action[env_ids] = 0.0

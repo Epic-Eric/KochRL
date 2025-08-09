@@ -14,15 +14,15 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 KOCH_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path="/home/asblab/ericxie/KochRL/source/KochRL/KochRL/tasks/direct/kochrl/follower.usd",
-        activate_contact_sensors=False,
+        activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=5.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=0, fix_root_link=True,
+            enabled_self_collisions=True, solver_position_iteration_count=32, solver_velocity_iteration_count=1, fix_root_link=True,
         ),
-        # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+        collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=0.0),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         joint_pos={

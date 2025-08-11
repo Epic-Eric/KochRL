@@ -39,10 +39,9 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 20.0
     sample_per_episode = 4
-    # workspace
-    workspace_x = [-0.3, 0.3]
-    workspace_y = [-0.3, 0.3]
-    workspace_z = [0.0, 0.3]
+    # sampling
+    sampling_origin = [0.025, 0.0, 0.05]
+    sampling_radius = 0.25 # 30 cms 
     stiffness_range = [0.0, 100.0]
     # - spaces definition
     action_space = 6
@@ -69,10 +68,11 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     joints = "joint_[1-6]"
    
     # - reward scales
-    rew_position_err = -0.2
+    rew_position_reward = 1
     rew_vel_penalty = -0.0001
     rew_acc_penalty = -0.0001
-    rew_out_of_bound_penalty = -10
+    rew_out_of_bound_penalty = -1
+    rew_self_collision_penalty = -0.1
     # rew_ref_pos_err = 0.1
     # rew_ref_vel_err = 0.075
     # - reset states/conditions

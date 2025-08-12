@@ -10,9 +10,10 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, detect_self_collision
+from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, compute_self_collision_forces
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -54,6 +55,22 @@ class KochrlEnv(DirectRLEnv):
         # Visualization markers
         self.target_markers:VisualizationMarkers
 
+        # Self-collision forces
+        self.self_collision_forces = torch.zeros((self.num_envs, 1), device=self.device)
+
+        # Logging
+        self._episode_sums = {
+            key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            for key in [
+                "rew_pos_reward",
+                "rew_vel_penalty",
+                "rew_acc_penalty",
+                "rew_out_of_bound",
+                "rew_self_collision_penalty",
+                "total_reward",
+            ]
+        }
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
@@ -65,6 +82,26 @@ class KochrlEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
+        # Create contact sensors - one sensor per body, each monitoring against all other bodies
+        self.contact_sensors = {}
+        link_names = ["base_link", "link_1", "link_2", "link_3", "link_4", "link_5", "link_6"]
+        
+        # Create all filter paths (all robot bodies)
+        all_robot_bodies = [f"/World/envs/env_.*/Robot/{name}" for name in link_names]
+        
+        for i, link_name in enumerate(link_names):
+            # Each sensor monitors ONE body against ALL robot bodies (including itself)
+            contact_sensor_cfg = ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link_name}",  # ONE sensor body
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                filter_prim_paths_expr=all_robot_bodies,  # Against ALL robot bodies (1-to-many)
+            )
+            
+            sensor = ContactSensor(contact_sensor_cfg)
+            self.contact_sensors[link_name] = sensor
+            self.scene.sensors[f"contact_sensor_{i}"] = sensor
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -107,8 +144,8 @@ class KochrlEnv(DirectRLEnv):
         observations = {"policy": obs}
         return observations
 
-    def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
+    def _get_rewards(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        total_reward, self._episode_sums = compute_rewards(
             self.cfg.rew_position_reward,
             self.cfg.rew_vel_penalty,
             self.cfg.rew_acc_penalty,
@@ -118,7 +155,9 @@ class KochrlEnv(DirectRLEnv):
             self.joint_pos[:, self._joints_idx],
             self.joint_vel[:, self._joints_idx],
             self.joint_acc[:, self._joints_idx],
-            self.total_reset_angles
+            self.total_reset_angles,
+            self.self_collision_forces,
+            self._episode_sums
         )
         return total_reward
 
@@ -140,6 +179,9 @@ class KochrlEnv(DirectRLEnv):
         
         # Store previous action
         self.prev_action = self.actions.clone()
+
+        # Get self-collision forces
+        self.self_collision_forces = compute_self_collision_forces(self.contact_sensors)
 
         # Resample target and stiffness at specified intervals
         current_step = self.episode_length_buf
@@ -169,7 +211,7 @@ class KochrlEnv(DirectRLEnv):
 
         # print out average norm self.keypoints error
         avg_keypoint_err = torch.mean(torch.norm(self.target_keypoint_err, dim=-1))
-        #print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
+        print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
         
         return out_of_bounds, time_out
 
@@ -213,6 +255,18 @@ class KochrlEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+        # Logging
+        extras = dict()
+        for key in self._episode_sums.keys():
+            episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
+            extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
+            self._episode_sums[key][env_ids] = 0.0
+        self.extras["log"] = dict()
+        self.extras["log"].update(extras)
+        extras = dict()
+        extras["Average target point error"] = torch.mean(torch.norm(self.target_err, dim=1), dim=0).item()
+        self.extras["log"].update(extras)
+
 
 @torch.jit.script
 def compute_rewards(
@@ -225,8 +279,10 @@ def compute_rewards(
     joints_pos: torch.Tensor,
     joints_vel: torch.Tensor,
     joints_acc: torch.Tensor,
-    joints_pos_limit: torch.Tensor
-) -> torch.Tensor:
+    joints_pos_limit: torch.Tensor,
+    collision_forces: torch.Tensor,
+    _episode_sums: dict[str, torch.Tensor]
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     # Position error 
     rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * 5)) * rew_scale_pos_reward
     
@@ -240,7 +296,16 @@ def compute_rewards(
     rew_out_of_bound = is_out_of_bound(joints_pos, joints_pos_limit).float() * rew_scale_out_of_bound_penalty
 
     # Self-collision penalty
-    rew_self_collision_penalty = 0 #TODO
+    rew_self_collision_penalty = collision_forces.squeeze(-1) * rew_scale_self_collision_penalty
 
     total_reward = rew_pos_reward + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound + rew_self_collision_penalty
-    return total_reward
+
+    # Logging
+    _episode_sums["rew_pos_reward"] += rew_pos_reward
+    _episode_sums["rew_vel_penalty"] += rew_vel_penalty
+    _episode_sums["rew_acc_penalty"] += rew_acc_penalty
+    _episode_sums["rew_out_of_bound"] += rew_out_of_bound
+    _episode_sums["rew_self_collision_penalty"] += rew_self_collision_penalty
+    _episode_sums["total_reward"] += total_reward
+
+    return total_reward, _episode_sums

@@ -171,13 +171,6 @@ def sample_stiffness(stiffness_range:list, num_envs) -> torch.Tensor:
     """
     return torch.FloatTensor(num_envs, 1).uniform_(stiffness_range[0], stiffness_range[1])
 
-def detect_self_collision(robot_articulation) -> torch.Tensor:
-    """Detect self-collision by checking contact sensor data."""
-    contact_data = robot_articulation.data.contact_force_matrix_w
-    contact_threshold = 0.1
-    contact_magnitudes = torch.norm(contact_data, dim=-1)
-    return torch.any(contact_magnitudes > contact_threshold, dim=-1)
-
 def setup_target_markers() -> VisualizationMarkers:
     """Setup a single visualization marker instance that can handle multiple environments."""
     marker_cfg = VisualizationMarkersCfg(
@@ -195,3 +188,46 @@ def setup_target_markers() -> VisualizationMarkers:
         }
     )
     return VisualizationMarkers(marker_cfg)
+
+def compute_self_collision_forces(contact_sensors) -> torch.Tensor:
+    """
+    Compute L2 norm of self-collision forces from multiple contact sensors.
+    Each sensor monitors one body against all robot bodies (1-to-many).
+    Expected shape per sensor: (num_envs, 1, 7, 3) - 1 sensor body vs 7 robot bodies.
+    """
+    link_names = ["base_link", "link_1", "link_2", "link_3", "link_4", "link_5", "link_6"]
+    num_links = len(link_names)
+    
+    # Get device and num_envs from first sensor
+    first_sensor = next(iter(contact_sensors.values()))
+    device = first_sensor.device
+    num_envs = first_sensor.num_instances
+    
+    # Initialize full collision matrix: (num_envs, 7, 7)
+    collision_matrix = torch.zeros((num_envs, num_links, num_links), device=device)
+    
+    for i, link_name in enumerate(link_names):
+        if link_name not in contact_sensors:
+            continue
+            
+        sensor = contact_sensors[link_name]
+        contact_forces = sensor.data.force_matrix_w
+        
+        if contact_forces is None or contact_forces.numel() == 0:
+            continue
+        
+        # Expected shape: (num_envs, 1, 7, 3) - one sensor body vs 7 filtered bodies
+        # Compute L2 norm: (num_envs, 1, 7)
+        force_magnitudes = torch.norm(contact_forces, dim=-1)
+        
+        # Fill row i of the collision matrix with this sensor's data
+        if force_magnitudes.shape[-1] == num_links:
+            collision_matrix[:, i, :] = force_magnitudes[:, 0, :]  # Copy the row
+    
+    # Apply upper triangular mask to avoid double counting and exclude diagonal
+    mask = torch.triu(torch.ones(num_links, num_links, device=device, dtype=torch.bool), diagonal=1)
+    
+    # Sum all collision forces using the mask
+    collision_forces = (collision_matrix * mask).sum(dim=(-2, -1), keepdim=True).squeeze(-1)  # (num_envs, 1)
+
+    return collision_forces

@@ -6,6 +6,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 import torch
+from isaaclab.sensors import ContactSensorCfg
 
 """ 
 ACTION SPACE:
@@ -72,7 +73,7 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     rew_vel_penalty = -0.0001
     rew_acc_penalty = -0.0001
     rew_out_of_bound_penalty = -1
-    rew_self_collision_penalty = -0.1
+    rew_self_collision_penalty = -1
     # rew_ref_pos_err = 0.1
     # rew_ref_vel_err = 0.075
     # - reset states/conditions

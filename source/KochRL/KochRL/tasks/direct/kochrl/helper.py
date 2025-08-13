@@ -3,6 +3,7 @@ import numpy as np
 import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 import math
+import isaaclab.utils.math as m
 
 def clamp_actions(l1: torch.Tensor, limits: torch.Tensor) -> torch.Tensor:
     batch_size = l1.shape[0]
@@ -89,19 +90,6 @@ def quat_rotate_vector(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     
     return rotated
 
-def quaternion_mult(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
-    assert q1.shape == q2.shape, "Quaternions must have the same shape"
-    
-    r1, x1, y1, z1 = q1[0], q1[1], q1[2], q1[3]
-    r2, x2, y2, z2 = q2[0], q2[1], q2[2], q2[3]
-    
-    return torch.tensor(
-        [r1 * r2 - x1 * x2 - y1 * y2 - z1 * z2,
-        r1 * x2 + r2 * x1 + y1 * z2 - z1 * y2,
-        r1 * y2 + r2 * y1 + z1 * x2 - x1 * z2,
-        r1 * z2 + r2 * z1 + x1 * y2 - y1 * x2]
-    )
-
 def sample_target_point(sampling_origin:list, sampling_radius:float) -> torch.Tensor:
     """
     Sample a random target point within the specified workspace.
@@ -140,30 +128,10 @@ def sample_target_point(sampling_origin:list, sampling_radius:float) -> torch.Te
     y_prime = torch.cross(z_prime, x_prime)
     y_prime = y_prime / torch.norm(y_prime)
 
-    # --- Step 4: Rotate the base vector (vertical) to be in line with x prime
-    base_vector = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32)  # Base vector in world frame
-    axis = torch.cross(base_vector, x_prime)  # Axis of rotation
-    axis = axis / torch.norm(axis)  # Normalize the axis
-    angle = torch.acos(torch.dot(base_vector, x_prime) / torch.norm(base_vector) / torch.norm(x_prime))  # Angle to rotate
-    x0, y0, z0 = torch.sin(angle/2) * axis  # Half-angle sine for quaternion
-    r0 = torch.cos(angle/2)  # Half-angle cosine for quaternion
-
-    # # --- Step 5: Sample random rotations theta, do operation (r,x,y,z) and make them into quaternions (qx, qy, qz, qw)
-    # angle1, angle2 = torch.rand(2) * 2 * math.pi  # Random angles for rotation, angle1 is around y', angle2 is around x'
-    # x1, y1, z1 = torch.sin(angle1/2) * y_prime
-    # x2, y2, z2 = torch.sin(angle2/2) * x_prime
-    # r1, r2 = torch.cos(angle1/2), torch.cos(angle2/2)
-    # product = quaternion_mult(torch.tensor([r0, x0, y0, z0]), torch.tensor([r1, x1, y1, z1]))
-    # product = product / torch.norm(product)  # Normalize to ensure it's a unit quaternion
-    # product = quaternion_mult(product, torch.tensor([r2, x2, y2, z2]))
-    # product = product / torch.norm(product)  # Normalize again to ensure it's a unit quaternion
-    # qw, qx, qy, qz = product
-
-    #quat = torch.tensor([qx, qy, qz, qw], dtype=torch.float32)
-    quat = torch.tensor([x0, y0, z0,r0], dtype=torch.float32)
-    quat = quat / torch.norm(quat)  # Ensure unit quaternion
+    pitch, roll = torch.rand(2) * 2 * math.pi
+    qx, qy, qz, qw = m.quat_mul(m.quat_from_angle_axis(roll, m.quat_apply(m.quat_from_angle_axis(pitch, y_prime), torch.tensor([0.0,0.0,1.0]))), m.quat_from_angle_axis(pitch, y_prime))
     
-    return torch.tensor([x, y, z, quat[0], quat[1], quat[2], quat[3]], dtype=torch.float32)
+    return torch.tensor([x, y, z, qx, qy, qz, qw], dtype=torch.float32)
 
 def sample_stiffness(stiffness_range:list, num_envs) -> torch.Tensor:
     """

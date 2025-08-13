@@ -96,9 +96,21 @@ def sample_target_point(sampling_origin:list, sampling_radius:float) -> torch.Te
     """
     # the sampling space is a sphere centered at sampling_origin with radius sampling_radius
     # get a point in that space in cartesian coordinate that has z >= 0.0 AND is not in the base
-    x = (torch.rand(1) - 0.5) * 2 * sampling_radius + sampling_origin[0]
-    y = (torch.rand(1) - 0.5) * 2 * sampling_radius + sampling_origin[1] 
-    z = (torch.rand(1) - 0.5) * 2 * sampling_radius + sampling_origin[2]
+    # Sample from 3D normal distribution
+    xyz = torch.randn(3)
+    
+    # Normalize to unit sphere
+    xyz = xyz / torch.norm(xyz)
+    
+    # Sample radius with correct volume distribution
+    u = torch.rand(1)
+    r = sampling_radius * (u ** (1/3))
+    
+    # Scale and translate
+    xyz = xyz * r
+    x = xyz[0] + sampling_origin[0]
+    y = xyz[1] + sampling_origin[1] 
+    z = xyz[2] + sampling_origin[2]
     
     # If z < 0, below ground, reflect it to make it positive
     if z < 0.0:

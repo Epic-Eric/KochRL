@@ -7,6 +7,8 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 import torch
 from isaaclab.sensors import ContactSensorCfg
+from .domain_randomization import EventCfg, action_noise_model, observation_noise_model
+from isaaclab.utils.noise import NoiseModelWithAdditiveBiasCfg
 
 """ 
 ACTION SPACE:
@@ -42,8 +44,9 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     sample_per_episode = 4
     # sampling
     sampling_origin = [0.025, 0.0, 0.05]
-    sampling_radius = 0.25 # 30 cms 
+    sampling_radius = 0.30 # 30 cms 
     stiffness_range = [0.0, 100.0]
+    force_range = [0.0, 10.0]  # N
     # - spaces definition
     action_space = 6
     observation_space = 53
@@ -57,6 +60,11 @@ class KochrlEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=1.0, replicate_physics=True)
+
+    # domain randomization
+    events: EventCfg = EventCfg()
+    action_noise_model: NoiseModelWithAdditiveBiasCfg = action_noise_model
+    observation_noise_model: NoiseModelWithAdditiveBiasCfg = observation_noise_model
 
     # custom parameters/scales
     # - controllable joint

@@ -3,7 +3,7 @@ Configuration file for Koch v1.1
 """
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.actuators import DCMotorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.sensors import ContactSensorCfg  # Add this import
@@ -36,17 +36,19 @@ KOCH_CFG = ArticulationCfg(
         },
     ),
     actuators={
-        "koch_base": ImplicitActuatorCfg( #XL430-W250-T
+        "koch_base": DCMotorCfg( #XL430-W250-T
             joint_names_expr=["joint_[1-2]"],
-            effort_limit_sim=0.28,
-            velocity_limit_sim=5.969, 
+            saturation_effort=1.4, #Nm, peak torque
+            effort_limit=1.0, #Nm, operating torque
+            velocity_limit=5.969, 
             stiffness=10,
             damping=1,
         ),
-        "koch_arm": ImplicitActuatorCfg( #XL330-M288-T
+        "koch_arm": DCMotorCfg( #XL330-M288-T
             joint_names_expr=["joint_[3-6]"],
-            effort_limit_sim=0.26, #Nm
-            velocity_limit_sim=10.786, #rad/s
+            saturation_effort=0.52, #Nm, peak torque
+            effort_limit=0.42, #Nm, operating torque
+            velocity_limit=10.786, #rad/s
             stiffness=10,
             damping=1,
         ),

@@ -47,6 +47,9 @@ class KochrlEnv(DirectRLEnv):
         # Other
         self.prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
         self.actions = torch.zeros((self.num_envs, self.num_joints), device=self.device)
+        self.applied_torque = torch.zeros((self.num_envs, self.num_joints), device=self.device)
+        # self.action_buffer = torch.zeros((1, self.num_envs, self.num_joints), device=self.device)
+        # self.action_buffer_idx = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
         
         # Sample tracking
         self.samples_per_episode = self.cfg.sample_per_episode
@@ -109,6 +112,8 @@ class KochrlEnv(DirectRLEnv):
         self.target_markers = setup_target_markers()
         
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        # self.actions = self.action_buffer[0]
+        # self.action_buffer = torch.cat((self.action_buffer[1:], actions.unsqueeze(0)), dim=0)
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
@@ -136,8 +141,9 @@ class KochrlEnv(DirectRLEnv):
                 self.target_keypoint_err,# 9
                 self.k_stiffness,        # 1
 
-                # Other (6)
-                self.prev_action         # 6
+                # Other (12)
+                self.prev_action,         # 6
+                self.applied_torque      # 6
             ),
             dim=-1,
         )
@@ -179,6 +185,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Store previous action
         self.prev_action = self.actions.clone()
+        self.applie_torque = self.robot.data.applied_torque
 
         # Get self-collision forces
         self.self_collision_forces = compute_self_collision_forces(self.contact_sensors)
@@ -232,6 +239,7 @@ class KochrlEnv(DirectRLEnv):
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
         self.joint_acc[env_ids] = 0.0
+        self.applied_torque[env_ids] = 0.0
         
         # Reset task parameters
         temp = sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device)
@@ -249,6 +257,7 @@ class KochrlEnv(DirectRLEnv):
         # Reset other states
         self.prev_action[env_ids] = 0.0
         self.actions[env_ids] = 0.0
+        # self.action_buffer_idx[env_ids] = torch.randint(1, 5, (len(env_ids),), device=self.device)
         
         # Write to simulation
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)

@@ -49,7 +49,7 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     force_range = [0.0, 10.0]  # N
     # - spaces definition
     action_space = 6
-    observation_space = 53
+    observation_space = 59
     state_space = 0
 
     # simulation
@@ -78,8 +78,8 @@ class KochrlEnvCfg(DirectRLEnvCfg):
    
     # - reward scales
     rew_position_reward = 1
-    rew_vel_penalty = -0.0001
-    rew_acc_penalty = -0.0001
+    rew_vel_penalty = -0.001
+    rew_acc_penalty = -0.001
     rew_out_of_bound_penalty = -1
     rew_self_collision_penalty = -1
     # rew_ref_pos_err = 0.1

@@ -13,7 +13,8 @@ from isaaclab.utils.math import sample_uniform
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, compute_self_collision_forces
+from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers
+from .helper import compute_self_collision_forces
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -153,6 +154,7 @@ class KochrlEnv(DirectRLEnv):
     def _get_rewards(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         total_reward, self._episode_sums = compute_rewards(
             self.cfg.rew_position_reward,
+            self.cfg.rew_position_std,
             self.cfg.rew_vel_penalty,
             self.cfg.rew_acc_penalty,
             self.cfg.rew_out_of_bound_penalty,
@@ -185,7 +187,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Store previous action
         self.prev_action = self.actions.clone()
-        self.applie_torque = self.robot.data.applied_torque
+        self.applied_torque = self.robot.data.applied_torque
 
         # Get self-collision forces
         self.self_collision_forces = compute_self_collision_forces(self.contact_sensors)
@@ -197,7 +199,7 @@ class KochrlEnv(DirectRLEnv):
             resample_list = torch.where(resample_mask)[0]
             # sample new targets for all environments
             temp = sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device)
-            print(f"Target point sampled: {temp}")
+            # print(f"Target point sampled: {temp}")
             # first 3 pos xyz
             self.sampled_target_pos[resample_list, :3] = (self.scene.env_origins[resample_list] + temp[:3])
             # last 4 quat xyzw
@@ -220,7 +222,7 @@ class KochrlEnv(DirectRLEnv):
         avg_keypoint_err = torch.mean(torch.norm(self.target_keypoint_err, dim=-1))
         print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
         
-        return out_of_bounds, time_out
+        return False, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
@@ -243,7 +245,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Reset task parameters
         temp = sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device)
-        print(f"Target point sampled: {temp}")
+        # print(f"Target point sampled: {temp}")
         for i, env_id in enumerate(env_ids):
             # first 3 pos xyz
             self.sampled_target_pos[env_id, :3] = (self.scene.env_origins[env_id] +  temp[:3])
@@ -273,13 +275,14 @@ class KochrlEnv(DirectRLEnv):
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
         extras = dict()
-        extras["Average target point error"] = torch.mean(torch.norm(self.target_err, dim=1), dim=0).item()
+        extras["Average keypoint error"] = torch.mean(torch.norm(self.target_keypoint_err, dim=1), dim=0).item()
         self.extras["log"].update(extras)
 
 
 @torch.jit.script
 def compute_rewards(
     rew_scale_pos_reward: float,
+    rew_scale_pos_std: float,
     rew_scale_vel_penalty: float,
     rew_scale_acc_penalty: float,
     rew_scale_out_of_bound_penalty: float,
@@ -293,7 +296,7 @@ def compute_rewards(
     _episode_sums: dict[str, torch.Tensor]
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     # Position error 
-    rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * 5)) * rew_scale_pos_reward
+    rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward
     
     # Velocity penalty
     rew_vel_penalty = torch.norm(joints_vel, dim=-1) * rew_scale_vel_penalty

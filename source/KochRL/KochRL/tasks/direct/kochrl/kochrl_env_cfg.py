@@ -78,12 +78,12 @@ class KochrlEnvCfg(DirectRLEnvCfg):
    
     # - reward scales
     rew_position_reward = 1
+    rew_position_std = 10 # how wide the tanh plot is. the lower the looser, the higher the stricter to achive high reward
     rew_vel_penalty = -0.001
     rew_acc_penalty = -0.001
-    rew_out_of_bound_penalty = -1
-    rew_self_collision_penalty = -1
-    # rew_ref_pos_err = 0.1
-    # rew_ref_vel_err = 0.075
+    rew_out_of_bound_penalty = -5
+    rew_self_collision_penalty = -0.3
+ 
     # - reset states/conditions
     shoulder_pan_reset_angles = [-3.140, 3.140] #[0, 6.28]  # sample range on reset [rad]
     shoulder_lift_reset_angles = [-2.094, 0.698] #[2.46, 4.71]

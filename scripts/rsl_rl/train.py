@@ -18,9 +18,9 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 # wandb
-load_dotenv()
-wandb.login(key=os.getenv("WANDB"))
-wandb.init(project="kochrl", name="training")
+# load_dotenv()
+# wandb.login(key=os.getenv("WANDB"))
+# wandb.init(project="kochrl", name="training")
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")

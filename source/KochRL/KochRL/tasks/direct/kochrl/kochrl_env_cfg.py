@@ -44,12 +44,12 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     sample_per_episode = 4
     # sampling
     sampling_origin = [0.025, 0.0, 0.05]
-    sampling_radius = 0.30 # 30 cms 
-    stiffness_range = [0.0, 100.0]
-    force_range = [0.0, 10.0]  # N
+    sampling_radius = 0.28 # 28 cms 
+    stiffness_range = [30.0, 100.0]
+    force_range = [0.1, 10.0]  # N
     # - spaces definition
     action_space = 6
-    observation_space = 59
+    observation_space = 52
     state_space = 0
 
     # simulation
@@ -78,11 +78,13 @@ class KochrlEnvCfg(DirectRLEnvCfg):
    
     # - reward scales
     rew_position_reward = 1
-    rew_position_std = 10 # how wide the tanh plot is. the lower the looser, the higher the stricter to achive high reward
-    rew_vel_penalty = -0.001
-    rew_acc_penalty = -0.001
-    rew_out_of_bound_penalty = -5
-    rew_self_collision_penalty = -0.3
+    rew_position_std = 5 # how wide the tanh plot is. the lower the looser, the higher the stricter to achive high reward
+    rew_vel_penalty = 0#-0.001
+    rew_acc_penalty = -0.0005
+    rew_out_of_bound_penalty = 0
+    rew_self_collision_penalty = 0
+    rew_hit_da_g_spot = 100
+    g_spot_radius = 0.01 # 1 cm
  
     # - reset states/conditions
     shoulder_pan_reset_angles = [-3.140, 3.140] #[0, 6.28]  # sample range on reset [rad]

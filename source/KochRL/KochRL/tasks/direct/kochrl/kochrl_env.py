@@ -13,8 +13,8 @@ from isaaclab.utils.math import sample_uniform
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers
-from .helper import compute_self_collision_forces
+from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, setup_force_markers, v1_to_v2_quaternion
+from .helper import compute_self_collision_forces, sample_external_force,compute_spring_equilibrium_position, has_hit_da_g_spot
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -44,6 +44,9 @@ class KochrlEnv(DirectRLEnv):
         self.target_err = torch.zeros((self.num_envs, 3), device=self.device)
         self.target_keypoint_err = torch.zeros((self.num_envs, 9), device=self.device)
         self.k_stiffness = torch.zeros((self.num_envs, 1), device=self.device)
+        self.sampling_forces = torch.zeros((self.num_envs, 3), device=self.device)
+        self.spring_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.has_external_force = torch.zeros((self.num_envs,), device=self.device, dtype=torch.bool)
 
         # Other
         self.prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
@@ -58,6 +61,7 @@ class KochrlEnv(DirectRLEnv):
 
         # Visualization markers
         self.target_markers:VisualizationMarkers
+        self.force_markers:VisualizationMarkers
 
         # Self-collision forces
         self.self_collision_forces = torch.zeros((self.num_envs, 1), device=self.device)
@@ -71,6 +75,7 @@ class KochrlEnv(DirectRLEnv):
                 "rew_acc_penalty",
                 "rew_out_of_bound",
                 "rew_self_collision_penalty",
+                "rew_hit_da_g_spot",
                 "total_reward",
             ]
         }
@@ -111,6 +116,7 @@ class KochrlEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
         # add markers
         self.target_markers = setup_target_markers()
+        self.force_markers = setup_force_markers()
         
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # self.actions = self.action_buffer[0]
@@ -159,11 +165,14 @@ class KochrlEnv(DirectRLEnv):
             self.cfg.rew_acc_penalty,
             self.cfg.rew_out_of_bound_penalty,
             self.cfg.rew_self_collision_penalty,
+            self.cfg.rew_hit_da_g_spot,
             self.target_keypoint_err,
             self.joint_pos[:, self._joints_idx],
             self.joint_vel[:, self._joints_idx],
             self.joint_acc[:, self._joints_idx],
             self.total_reset_angles,
+            torch.where(self.has_external_force.unsqueeze(-1), self.ee_body_pos[:, :3] - self.spring_target_pos, self.target_err[:, :3]),
+            self.cfg.g_spot_radius,
             self.self_collision_forces,
             self._episode_sums
         )
@@ -208,6 +217,42 @@ class KochrlEnv(DirectRLEnv):
             self.k_stiffness[resample_list] = sample_stiffness(self.cfg.stiffness_range, len(resample_list)).to(self.device)
             # update target markers
             self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
+            # force sampling - only for half the environments
+            force_mask = torch.rand(len(resample_list), device=self.device) < 0.5
+            has_force_envs = resample_list[force_mask]
+            no_force_envs = resample_list[~force_mask]
+            self.has_external_force[resample_list] = force_mask
+
+            # Sample forces only for selected environments
+            if len(has_force_envs) > 0:
+                self.sampling_forces[has_force_envs] = sample_external_force(
+                    self.cfg.force_range,
+                    len(has_force_envs),
+                    self.device
+                )
+                self.robot.set_external_force_and_torque(
+                    forces=self.sampling_forces[has_force_envs].unsqueeze(1), 
+                    torques=torch.zeros((len(has_force_envs), 3), device=self.device).unsqueeze(1), 
+                    body_ids=[self.ee_body_idx], 
+                    env_ids=has_force_envs
+                )
+
+            # Set force to zero for environments without external force
+            if len(no_force_envs) > 0:
+                self.sampling_forces[no_force_envs] = 0.0
+
+            # Compute spring target position
+            self.spring_target_pos = torch.where(
+                self.has_external_force.unsqueeze(-1),
+                compute_spring_equilibrium_position(
+                    self.sampled_target_pos, self.sampling_forces, self.k_stiffness,
+                    self.cfg.sampling_origin, self.cfg.sampling_radius
+                ),
+                self.sampled_target_pos[:, :3]  # Use target position when no force
+            )
+
+        self.force_markers.visualize(torch.stack([self.ee_body_pos[:, :3], self.sampled_target_pos[:, :3], self.spring_target_pos], dim=1).view(-1, 3), v1_to_v2_quaternion(torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.ee_body_pos.shape[0], 1), self.sampling_forces).repeat_interleave(3, dim=0), marker_indices=torch.tensor([0, 0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
+        
         # Check termination conditions
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         
@@ -220,7 +265,8 @@ class KochrlEnv(DirectRLEnv):
 
         # print out average norm self.keypoints error
         avg_keypoint_err = torch.mean(torch.norm(self.target_keypoint_err, dim=-1))
-        print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
+        # print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
+        # print(f"[INFO]: Average target error: {torch.mean(torch.norm(self.target_err, dim=-1)).item():.4f}")
         
         return False, time_out
 
@@ -255,6 +301,41 @@ class KochrlEnv(DirectRLEnv):
         self.k_stiffness[env_ids] = sample_stiffness(self.cfg.stiffness_range, len(env_ids)).to(self.device)
         # update target markers
         self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
+        # force sampling - only for half the environments
+        force_mask = torch.rand(len(env_ids), device=self.device) < 0.5
+        has_force_envs = env_ids[force_mask]
+        no_force_envs = env_ids[~force_mask]
+        self.has_external_force[env_ids] = force_mask
+
+        # Sample forces only for selected environments
+        if len(has_force_envs) > 0:
+            self.sampling_forces[has_force_envs] = sample_external_force(
+                self.cfg.force_range,
+                len(has_force_envs),
+                self.device
+            )
+            self.robot.set_external_force_and_torque(
+                forces=self.sampling_forces[has_force_envs].unsqueeze(1), 
+                torques=torch.zeros((len(has_force_envs), 3), device=self.device).unsqueeze(1), 
+                body_ids=[self.ee_body_idx], 
+                env_ids=has_force_envs
+            )
+
+        # Set force to zero for environments without external force
+        if len(no_force_envs) > 0:
+            self.sampling_forces[no_force_envs] = 0.0
+
+        # Compute spring target position
+        self.spring_target_pos = torch.where(
+            self.has_external_force.unsqueeze(-1),
+            compute_spring_equilibrium_position(
+                self.sampled_target_pos, self.sampling_forces, self.k_stiffness,
+                self.cfg.sampling_origin, self.cfg.sampling_radius
+            ),
+            self.sampled_target_pos[:, :3]  # Use target position when no force
+        )
+
+        self.force_markers.visualize(torch.stack([self.ee_body_pos[:, :3], self.sampled_target_pos[:, :3], self.spring_target_pos], dim=1).view(-1, 3), v1_to_v2_quaternion(torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.ee_body_pos.shape[0], 1), self.sampling_forces).repeat_interleave(3, dim=0), marker_indices=torch.tensor([0, 0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         
         # Reset other states
         self.prev_action[env_ids] = 0.0
@@ -276,6 +357,8 @@ class KochrlEnv(DirectRLEnv):
         self.extras["log"].update(extras)
         extras = dict()
         extras["Average keypoint error"] = torch.mean(torch.norm(self.target_keypoint_err, dim=1), dim=0).item()
+        extras["Average target error"] = torch.mean(torch.norm(self.target_err, dim=1), dim=0).item()
+        extras["Average spring target error"] = torch.mean(torch.norm(self.spring_target_pos - self.ee_body_pos[:, :3], dim=1), dim=0).item()
         self.extras["log"].update(extras)
 
 
@@ -287,17 +370,23 @@ def compute_rewards(
     rew_scale_acc_penalty: float,
     rew_scale_out_of_bound_penalty: float,
     rew_scale_self_collision_penalty: float,
+    rew_scale_hit_da_g_spot: float,
     target_keypoint_err: torch.Tensor,
     joints_pos: torch.Tensor,
     joints_vel: torch.Tensor,
     joints_acc: torch.Tensor,
     joints_pos_limit: torch.Tensor,
+    target_err: torch.Tensor,
+    g_spot_radius: float,
     collision_forces: torch.Tensor,
     _episode_sums: dict[str, torch.Tensor]
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    # Position error 
-    rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward
+    # Position reward
+    rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward + (1 - torch.tanh(torch.norm(target_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward
     
+    # Hit da g spot reward
+    rew_hit_da_g_spot = has_hit_da_g_spot(target_err, g_spot_radius) * rew_scale_hit_da_g_spot
+
     # Velocity penalty
     rew_vel_penalty = torch.norm(joints_vel, dim=-1) * rew_scale_vel_penalty
     
@@ -310,7 +399,7 @@ def compute_rewards(
     # Self-collision penalty
     rew_self_collision_penalty = collision_forces.squeeze(-1) * rew_scale_self_collision_penalty
 
-    total_reward = rew_pos_reward + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound + rew_self_collision_penalty
+    total_reward = rew_pos_reward + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound + rew_self_collision_penalty + rew_hit_da_g_spot
 
     # Logging
     _episode_sums["rew_pos_reward"] += rew_pos_reward
@@ -318,6 +407,7 @@ def compute_rewards(
     _episode_sums["rew_acc_penalty"] += rew_acc_penalty
     _episode_sums["rew_out_of_bound"] += rew_out_of_bound
     _episode_sums["rew_self_collision_penalty"] += rew_self_collision_penalty
+    _episode_sums["rew_hit_da_g_spot"] += rew_hit_da_g_spot
     _episode_sums["total_reward"] += total_reward
 
     return total_reward, _episode_sums

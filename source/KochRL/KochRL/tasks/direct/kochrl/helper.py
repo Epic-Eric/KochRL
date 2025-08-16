@@ -160,7 +160,7 @@ def setup_target_markers() -> VisualizationMarkers:
                 radius=0.02,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), metallic=0.0),
             ),
-            "target_frame": sim_utils.CylinderCfg(
+            "target_frame": sim_utils.ConeCfg(
                 radius=0.005,
                 height=0.1,
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), metallic=0.0),
@@ -168,6 +168,24 @@ def setup_target_markers() -> VisualizationMarkers:
         }
     )
     return VisualizationMarkers(marker_cfg)
+
+def setup_force_markers() -> VisualizationMarkers:
+    marker_cfg = VisualizationMarkersCfg(
+        prim_path="Visuals/ForceMarkers",
+        markers={
+            "force_arrow": sim_utils.ConeCfg(
+                radius=0.005,
+                height=0.2,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.0),
+            ),
+            "equilibrium_point": sim_utils.SphereCfg(
+                radius=0.02,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0), metallic=0.0),
+            ),
+        }
+    )
+    return VisualizationMarkers(marker_cfg)
+
 
 def compute_self_collision_forces(contact_sensors) -> torch.Tensor:
     """
@@ -211,3 +229,97 @@ def compute_self_collision_forces(contact_sensors) -> torch.Tensor:
     collision_forces = (collision_matrix * mask).sum(dim=(-2, -1), keepdim=True).squeeze(-1)  # (num_envs, 1)
 
     return collision_forces
+
+def sample_external_force(force_range: list, num_envs: int, device: str) -> torch.Tensor:
+    """Sample random external forces for environments."""
+    force_magnitudes = torch.FloatTensor(num_envs, 1).uniform_(force_range[0], force_range[1]).to(device)
+    directions = torch.randn(num_envs, 3, device=device)
+    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+    return force_magnitudes * directions
+
+def compute_spring_equilibrium_position(target_pos: torch.Tensor, external_force: torch.Tensor, 
+                                     stiffness: torch.Tensor, sampling_origin: list, sampling_radius: float) -> torch.Tensor:
+    """Compute equilibrium position: x_eq = x_target + F_external / k, clamped to workspace"""
+    displacement = external_force / stiffness
+    equilibrium_pos = target_pos[:, :3] + displacement
+    
+    # Workspace constraints
+    origin = torch.tensor(sampling_origin, device=equilibrium_pos.device)
+    
+    # Vector from sampling origin to equilibrium position
+    direction_vec = equilibrium_pos - origin
+    distance = torch.norm(direction_vec, dim=-1, keepdim=True)
+    
+    # If outside radius, project along external force direction from target_pos to sphere edge
+    is_outside = (distance > sampling_radius).squeeze(-1)
+    
+    # For points outside: ray from target_pos in external_force direction intersecting sphere
+    # Solve: |target_pos + t * force_dir - origin|^2 = radius^2
+    force_dir = external_force / torch.norm(external_force, dim=-1, keepdim=True)
+    target_to_origin = target_pos[:, :3] - origin
+    
+    # Quadratic equation coefficients: at^2 + bt + c = 0
+    a = torch.sum(force_dir * force_dir, dim=-1)  # should be 1 since normalized
+    b = 2 * torch.sum(target_to_origin * force_dir, dim=-1)
+    c = torch.sum(target_to_origin * target_to_origin, dim=-1) - sampling_radius**2
+    
+    # Solve quadratic: t = (-b ± sqrt(b^2 - 4ac)) / 2a
+    discriminant = b*b - 4*a*c
+    t = (-b + torch.sqrt(torch.clamp(discriminant, min=0))) / (2*a)
+    
+    sphere_intersection = target_pos[:, :3] + t.unsqueeze(-1) * force_dir
+    
+    clamped_pos = torch.where(
+        is_outside.unsqueeze(-1),
+        sphere_intersection,
+        equilibrium_pos
+    )
+    
+    # Handle ground plane intersection - ray from target_pos through clamped_pos
+    below_ground = clamped_pos[:, 2] < 0.0
+    
+    ray_direction = clamped_pos - target_pos[:, :3]
+    t_ground = torch.where(
+        torch.abs(ray_direction[:, 2]) > 1e-8,
+        -target_pos[:, 2] / ray_direction[:, 2],
+        torch.ones_like(ray_direction[:, 2])
+    )
+    
+    ground_intersection = target_pos[:, :3] + t_ground.unsqueeze(-1) * ray_direction
+    ground_intersection[:, 2] = 0.0
+    
+    final_pos = torch.where(
+        below_ground.unsqueeze(-1),
+        ground_intersection,
+        clamped_pos
+    )
+    
+    return final_pos
+
+def v1_to_v2_quaternion(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion v1 to v2
+    """
+    # normalize vectors
+    v1_unit = v1 / v1.norm(dim=-1, keepdim=True)
+    v2_unit = v2 / v2.norm(dim=-1, keepdim=True)
+    
+    # cross product = rotation axis
+    axis = torch.cross(v1_unit, v2_unit, dim=-1)
+    axis_norm = axis.norm(dim=-1, keepdim=True)
+    
+    # angle between vectors
+    cos_theta = torch.sum(v1_unit * v2_unit, dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    angle = torch.acos(cos_theta)
+    
+    # handle near-zero rotation: pick any axis
+    axis = torch.where(axis_norm > 1e-8, axis / axis_norm, torch.tensor([1.0, 0.0, 0.0], device=v1.device))
+    
+    # convert axis-angle to quaternion
+    return m.quat_from_angle_axis(angle.squeeze(-1), axis)
+
+def has_hit_da_g_spot(position_error: torch.Tensor, g_spot_radius: float) -> torch.Tensor:
+    """
+    Check if the target position is within the g-spot radius
+    """
+    return torch.norm(position_error, dim=-1) < g_spot_radius

@@ -240,61 +240,82 @@ def sample_external_force(force_range: list, num_envs: int, device: str) -> torc
 def compute_spring_equilibrium_position(target_pos: torch.Tensor, external_force: torch.Tensor, 
                                      stiffness: torch.Tensor, sampling_origin: list, sampling_radius: float) -> torch.Tensor:
     """Compute equilibrium position: x_eq = x_target + F_external / k, clamped to workspace"""
-    displacement = external_force / stiffness
+    # Handle zero forces - if force is zero, return target position
+    force_magnitude = torch.norm(external_force, dim=-1, keepdim=True)
+    has_force = force_magnitude > 1e-8
+    
+    # Only compute displacement for environments with non-zero force
+    displacement = torch.where(
+        has_force,
+        external_force / stiffness,
+        torch.zeros_like(external_force)
+    )
     equilibrium_pos = target_pos[:, :3] + displacement
     
-    # Workspace constraints
-    origin = torch.tensor(sampling_origin, device=equilibrium_pos.device)
+    # For environments without force, return target position directly
+    no_force_mask = ~has_force.squeeze(-1)
+    if torch.any(no_force_mask):
+        # Early return for no-force environments
+        result = equilibrium_pos.clone()
+        result[no_force_mask] = target_pos[no_force_mask, :3]
+        return result
     
-    # Vector from sampling origin to equilibrium position
+    # Continue with clamping logic only for environments with force
+    origin = torch.tensor(sampling_origin, device=equilibrium_pos.device)
     direction_vec = equilibrium_pos - origin
     distance = torch.norm(direction_vec, dim=-1, keepdim=True)
-    
-    # If outside radius, project along external force direction from target_pos to sphere edge
     is_outside = (distance > sampling_radius).squeeze(-1)
     
-    # For points outside: ray from target_pos in external_force direction intersecting sphere
-    # Solve: |target_pos + t * force_dir - origin|^2 = radius^2
-    force_dir = external_force / torch.norm(external_force, dim=-1, keepdim=True)
-    target_to_origin = target_pos[:, :3] - origin
+    # Only process environments that are outside and have force
+    process_mask = is_outside & has_force.squeeze(-1)
     
-    # Quadratic equation coefficients: at^2 + bt + c = 0
-    a = torch.sum(force_dir * force_dir, dim=-1)  # should be 1 since normalized
-    b = 2 * torch.sum(target_to_origin * force_dir, dim=-1)
-    c = torch.sum(target_to_origin * target_to_origin, dim=-1) - sampling_radius**2
+    if torch.any(process_mask):
+        # Normalize force direction only for environments being processed
+        force_dir = torch.zeros_like(external_force)
+        force_dir[process_mask] = external_force[process_mask] / force_magnitude[process_mask]
+        
+        target_to_origin = target_pos[:, :3] - origin
+        
+        # Quadratic equation coefficients
+        a = torch.sum(force_dir * force_dir, dim=-1)
+        b = 2 * torch.sum(target_to_origin * force_dir, dim=-1) 
+        c = torch.sum(target_to_origin * target_to_origin, dim=-1) - sampling_radius**2
+        
+        discriminant = b*b - 4*a*c
+        t = (-b + torch.sqrt(torch.clamp(discriminant, min=0))) / torch.clamp(2*a, min=1e-8)
+        
+        sphere_intersection = target_pos[:, :3] + t.unsqueeze(-1) * force_dir
+        
+        equilibrium_pos = torch.where(
+            process_mask.unsqueeze(-1),
+            sphere_intersection,
+            equilibrium_pos
+        )
     
-    # Solve quadratic: t = (-b ± sqrt(b^2 - 4ac)) / 2a
-    discriminant = b*b - 4*a*c
-    t = (-b + torch.sqrt(torch.clamp(discriminant, min=0))) / (2*a)
+    # Handle ground plane intersection
+    below_ground = equilibrium_pos[:, 2] < 0.0
     
-    sphere_intersection = target_pos[:, :3] + t.unsqueeze(-1) * force_dir
+    if torch.any(below_ground):
+        ray_direction = equilibrium_pos - target_pos[:, :3]
+        
+        # Avoid division by zero in ground intersection
+        safe_z = torch.where(
+            torch.abs(ray_direction[:, 2]) > 1e-8,
+            ray_direction[:, 2],
+            torch.ones_like(ray_direction[:, 2])
+        )
+        
+        t_ground = -target_pos[:, 2] / safe_z
+        ground_intersection = target_pos[:, :3] + t_ground.unsqueeze(-1) * ray_direction
+        ground_intersection[:, 2] = 0.0
+        
+        equilibrium_pos = torch.where(
+            below_ground.unsqueeze(-1),
+            ground_intersection,
+            equilibrium_pos
+        )
     
-    clamped_pos = torch.where(
-        is_outside.unsqueeze(-1),
-        sphere_intersection,
-        equilibrium_pos
-    )
-    
-    # Handle ground plane intersection - ray from target_pos through clamped_pos
-    below_ground = clamped_pos[:, 2] < 0.0
-    
-    ray_direction = clamped_pos - target_pos[:, :3]
-    t_ground = torch.where(
-        torch.abs(ray_direction[:, 2]) > 1e-8,
-        -target_pos[:, 2] / ray_direction[:, 2],
-        torch.ones_like(ray_direction[:, 2])
-    )
-    
-    ground_intersection = target_pos[:, :3] + t_ground.unsqueeze(-1) * ray_direction
-    ground_intersection[:, 2] = 0.0
-    
-    final_pos = torch.where(
-        below_ground.unsqueeze(-1),
-        ground_intersection,
-        clamped_pos
-    )
-    
-    return final_pos
+    return equilibrium_pos
 
 def v1_to_v2_quaternion(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
     """

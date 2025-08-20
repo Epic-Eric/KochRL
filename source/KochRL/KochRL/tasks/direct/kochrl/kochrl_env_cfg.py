@@ -40,20 +40,20 @@ Total: 53
 class KochrlEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 20.0
+    episode_length_s = 12.0
     sample_per_episode = 4
     # sampling
     sampling_origin = [0.025, 0.0, 0.05]
-    sampling_radius = 0.28 # 28 cms 
+    sampling_radius = 0.20 # 28 cms 
     stiffness_range = [30.0, 1000.0]
     force_range = [0.1, 10.0]  # N
     # - spaces definition
     action_space = 6
-    observation_space = 52
+    observation_space = 59
     state_space = 0
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+    sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
 
     # robot(s)
     robot_cfg: ArticulationCfg = KOCH_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -67,30 +67,20 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     observation_noise_model: NoiseModelWithAdditiveBiasCfg = observation_noise_model
 
     # custom parameters/scales
-    # - controllable joint
-    # shoulder_pan = "joint_1"
-    # shoulder_lift = "joint_2"
-    # elbow_flex = "joint_3"
-    # wrist_flex = "joint_4"
-    # wrist_roll = "joint_5"
-    # gripper = "joint_6"
     joints = "joint_[1-6]"
    
-    # - reward scales
-    rew_position_reward = 0.3
-    rew_position_std = 5 # how wide the tanh plot is. the lower the looser, the higher the stricter to achive high reward
-    rew_vel_penalty = 0#-0.001
-    rew_acc_penalty = -0.0005
-    rew_out_of_bound_penalty = 0
-    rew_self_collision_penalty = 0
-    rew_hit_da_g_spot = 500
-    g_spot_radius = 0.01 # 1 cm
+    # THE 4 CORE REWARD PARAMETERS FROM SUCCESSFUL REACH ENVIRONMENT
+    rew_position_error_weight = -0.2     # L2 position error penalty
+    rew_position_tanh_weight = 0.1      # Tanh position reward
+    rew_position_tanh_std = 0.1          # Standard deviation for tanh
+    rew_orientation_error_weight = -0.0  # Orientation error penalty
+    rew_action_rate_weight = -0.0001     # Action rate penalty
  
     # - reset states/conditions
-    shoulder_pan_reset_angles = [-3.140, 3.140] #[0, 6.28]  # sample range on reset [rad]
-    shoulder_lift_reset_angles = [-2.094, 0.698] #[2.46, 4.71]
-    elbow_flex_reset_angles = [-1.501, 1.798] #[1.57, 4.92]
-    wrist_flex_reset_angles = [-2.059, 1.815] #[2.79, 6.28]
-    wrist_roll_reset_angles = [-3.140, 3.140] #[0, 6.28]
-    gripper_reset_angles = [-1.745, 0.0873] #[4.6, 6.49]
+    shoulder_pan_reset_angles = [-3.140, 3.140]
+    shoulder_lift_reset_angles = [-2.094, 0.698]
+    elbow_flex_reset_angles = [-1.501, 1.798]
+    wrist_flex_reset_angles = [-2.059, 1.815]
+    wrist_roll_reset_angles = [-3.140, 3.140]
+    gripper_reset_angles = [-1.745, 0.0873]
     total_reset_angles = [shoulder_pan_reset_angles, shoulder_lift_reset_angles, elbow_flex_reset_angles, wrist_flex_reset_angles, wrist_roll_reset_angles, gripper_reset_angles]

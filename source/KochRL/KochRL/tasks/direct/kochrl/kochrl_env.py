@@ -15,6 +15,7 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from .kochrl_env_cfg import KochrlEnvCfg
 from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, setup_force_markers, v1_to_v2_quaternion
 from .helper import compute_self_collision_forces, sample_external_force,compute_spring_equilibrium_position, has_hit_da_g_spot
+from .helper import position_command_error, position_command_error_tanh, orientation_command_error, action_rate_l2
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -66,16 +67,14 @@ class KochrlEnv(DirectRLEnv):
         # Self-collision forces
         self.self_collision_forces = torch.zeros((self.num_envs, 1), device=self.device)
 
-        # Logging
+        # Logging for the 4 reach environment rewards
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "rew_pos_reward",
-                "rew_vel_penalty",
-                "rew_acc_penalty",
-                "rew_out_of_bound",
-                "rew_self_collision_penalty",
-                "rew_hit_da_g_spot",
+                "rew_position_error",
+                "rew_position_tanh",
+                "rew_orientation_error", 
+                "rew_action_rate",
                 "total_reward",
             ]
         }
@@ -121,14 +120,16 @@ class KochrlEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # self.actions = self.action_buffer[0]
         # self.action_buffer = torch.cat((self.action_buffer[1:], actions.unsqueeze(0)), dim=0)
+        self.prev_action = self.actions.clone()
         self.actions = actions.clone()
 
     def _apply_action(self) -> None:
         # Actions are delta joint positions, add to current positions, and clamp to limits
-        self.clamped_targets = clamp_actions(self.actions + self.joint_pos[:, self._joints_idx], self.total_reset_angles)
+        self.clamped_targets = clamp_actions(self.actions * 0.5 + self.joint_pos[:, self._joints_idx], self.total_reset_angles)
         
         # Set joint position targets
         self.robot.set_joint_position_target(self.clamped_targets, joint_ids=self._joints_idx)
+        print(self.actions)
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
@@ -158,25 +159,44 @@ class KochrlEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        total_reward, self._episode_sums = compute_rewards(
-            self.cfg.rew_position_reward,
-            self.cfg.rew_position_std,
-            self.cfg.rew_vel_penalty,
-            self.cfg.rew_acc_penalty,
-            self.cfg.rew_out_of_bound_penalty,
-            self.cfg.rew_self_collision_penalty,
-            self.cfg.rew_hit_da_g_spot,
-            self.target_keypoint_err,
-            self.joint_pos[:, self._joints_idx],
-            self.joint_vel[:, self._joints_idx],
-            self.joint_acc[:, self._joints_idx],
-            self.total_reset_angles,
-            torch.where(self.has_external_force.unsqueeze(-1), self.ee_body_pos[:, :3] - self.spring_target_pos, self.target_err[:, :3]),
-            self.cfg.g_spot_radius,
-            self.self_collision_forces,
-            self._episode_sums
-        )
-        return total_reward
+        # THE 4 CORE REWARD FUNCTIONS FROM SUCCESSFUL REACH ENVIRONMENT
+        
+        # 1. Position error penalty (L2 norm)
+        rew_position_error = position_command_error(
+            self.ee_body_pos[:, :3], 
+            self.sampled_target_pos[:, :3]
+        ) * self.cfg.rew_position_error_weight
+        
+        # 2. Position tracking reward (tanh)
+        rew_position_tanh = position_command_error_tanh(
+            self.ee_body_pos[:, :3], 
+            self.sampled_target_pos[:, :3], 
+            self.cfg.rew_position_tanh_std
+        ) * self.cfg.rew_position_tanh_weight
+        
+        # 3. Orientation error penalty
+        rew_orientation_error = orientation_command_error(
+            self.ee_body_pos[:, 3:7], 
+            self.sampled_target_pos[:, 3:7]
+        ) * self.cfg.rew_orientation_error_weight
+        
+        # 4. Action rate penalty
+        rew_action_rate = action_rate_l2(
+            self.actions, 
+            self.prev_action
+        ) * self.cfg.rew_action_rate_weight
+        
+        # Total reward
+        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate
+        
+        # Logging
+        self._episode_sums["rew_position_error"] += rew_position_error
+        self._episode_sums["rew_position_tanh"] += rew_position_tanh
+        self._episode_sums["rew_orientation_error"] += rew_orientation_error
+        self._episode_sums["rew_action_rate"] += rew_action_rate
+        self._episode_sums["total_reward"] += total_reward
+        
+        return total_reward * self.step_dt
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Updates - get fresh data from simulation
@@ -195,7 +215,6 @@ class KochrlEnv(DirectRLEnv):
         self.target_keypoint_err = self.keypoints - get_keypoints(self.sampled_target_pos)
         
         # Store previous action
-        self.prev_action = self.actions.clone()
         self.applied_torque = self.robot.data.applied_torque
 
         # Get self-collision forces
@@ -218,13 +237,14 @@ class KochrlEnv(DirectRLEnv):
             # update target markers
             self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
             # force sampling - only for half the environments
-            force_mask = torch.rand(len(resample_list), device=self.device) < 0.5
+            force_mask = torch.rand(len(resample_list), device=self.device) < 0
             has_force_envs = resample_list[force_mask]
             no_force_envs = resample_list[~force_mask]
             self.has_external_force[resample_list] = force_mask
 
             # Sample forces only for selected environments
             if len(has_force_envs) > 0:
+                print(f"[INFO]: Sampling forces for {len(has_force_envs)} environments")
                 self.sampling_forces[has_force_envs] = sample_external_force(
                     self.cfg.force_range,
                     len(has_force_envs),
@@ -302,13 +322,14 @@ class KochrlEnv(DirectRLEnv):
         # update target markers
         self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         # force sampling - only for half the environments
-        force_mask = torch.rand(len(env_ids), device=self.device) < 0.5
+        force_mask = torch.rand(len(env_ids), device=self.device) < 0
         has_force_envs = env_ids[force_mask]
         no_force_envs = env_ids[~force_mask]
         self.has_external_force[env_ids] = force_mask
 
         # Sample forces only for selected environments
         if len(has_force_envs) > 0:
+            print(f"[INFO]: Sampling forces for {len(has_force_envs)} environments")
             self.sampling_forces[has_force_envs] = sample_external_force(
                 self.cfg.force_range,
                 len(has_force_envs),
@@ -334,6 +355,7 @@ class KochrlEnv(DirectRLEnv):
             ),
             self.sampled_target_pos[:, :3]  # Use target position when no force
         )
+        print(f"[INFO]: Spring target position: {self.spring_target_pos - self.scene.env_origins}")
 
         self.force_markers.visualize(torch.stack([self.ee_body_pos[:, :3], self.sampled_target_pos[:, :3], self.spring_target_pos], dim=1).view(-1, 3), v1_to_v2_quaternion(torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.ee_body_pos.shape[0], 1), self.sampling_forces).repeat_interleave(3, dim=0), marker_indices=torch.tensor([0, 0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         
@@ -362,52 +384,3 @@ class KochrlEnv(DirectRLEnv):
         self.extras["log"].update(extras)
 
 
-@torch.jit.script
-def compute_rewards(
-    rew_scale_pos_reward: float,
-    rew_scale_pos_std: float,
-    rew_scale_vel_penalty: float,
-    rew_scale_acc_penalty: float,
-    rew_scale_out_of_bound_penalty: float,
-    rew_scale_self_collision_penalty: float,
-    rew_scale_hit_da_g_spot: float,
-    target_keypoint_err: torch.Tensor,
-    joints_pos: torch.Tensor,
-    joints_vel: torch.Tensor,
-    joints_acc: torch.Tensor,
-    joints_pos_limit: torch.Tensor,
-    target_err: torch.Tensor,
-    g_spot_radius: float,
-    collision_forces: torch.Tensor,
-    _episode_sums: dict[str, torch.Tensor]
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    # Position reward
-    rew_pos_reward = (1 - torch.tanh(torch.norm(target_keypoint_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward + (1 - torch.tanh(torch.norm(target_err, dim=-1) * rew_scale_pos_std)) * rew_scale_pos_reward
-    
-    # Hit da g spot reward
-    rew_hit_da_g_spot = has_hit_da_g_spot(target_err, g_spot_radius) * rew_scale_hit_da_g_spot
-
-    # Velocity penalty
-    rew_vel_penalty = torch.norm(joints_vel, dim=-1) * rew_scale_vel_penalty
-    
-    # Acceleration penalty
-    rew_acc_penalty = torch.norm(joints_acc, dim=-1) * rew_scale_acc_penalty
-    
-    # Out of bounds penalty
-    rew_out_of_bound = is_out_of_bound(joints_pos, joints_pos_limit).float() * rew_scale_out_of_bound_penalty
-
-    # Self-collision penalty
-    rew_self_collision_penalty = collision_forces.squeeze(-1) * rew_scale_self_collision_penalty
-
-    total_reward = rew_pos_reward + rew_vel_penalty + rew_acc_penalty + rew_out_of_bound + rew_self_collision_penalty + rew_hit_da_g_spot
-
-    # Logging
-    _episode_sums["rew_pos_reward"] += rew_pos_reward
-    _episode_sums["rew_vel_penalty"] += rew_vel_penalty
-    _episode_sums["rew_acc_penalty"] += rew_acc_penalty
-    _episode_sums["rew_out_of_bound"] += rew_out_of_bound
-    _episode_sums["rew_self_collision_penalty"] += rew_self_collision_penalty
-    _episode_sums["rew_hit_da_g_spot"] += rew_hit_da_g_spot
-    _episode_sums["total_reward"] += total_reward
-
-    return total_reward, _episode_sums

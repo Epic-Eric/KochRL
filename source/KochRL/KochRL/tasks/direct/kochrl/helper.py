@@ -4,6 +4,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 import math
 import isaaclab.utils.math as m
+from isaaclab.utils.math import quat_error_magnitude
 
 def clamp_actions(l1: torch.Tensor, limits: torch.Tensor) -> torch.Tensor:
     batch_size = l1.shape[0]
@@ -252,13 +253,11 @@ def compute_spring_equilibrium_position(target_pos: torch.Tensor, external_force
     )
     equilibrium_pos = target_pos[:, :3] + displacement
     
-    # For environments without force, return target position directly
-    no_force_mask = ~has_force.squeeze(-1)
-    if torch.any(no_force_mask):
-        # Early return for no-force environments
-        result = equilibrium_pos.clone()
-        result[no_force_mask] = target_pos[no_force_mask, :3]
-        return result
+    equilibrium_pos = torch.where(
+        has_force.squeeze(-1).unsqueeze(-1),
+        equilibrium_pos,
+        target_pos[:, :3]
+    )
     
     # Continue with clamping logic only for environments with force
     origin = torch.tensor(sampling_origin, device=equilibrium_pos.device)
@@ -282,7 +281,17 @@ def compute_spring_equilibrium_position(target_pos: torch.Tensor, external_force
         c = torch.sum(target_to_origin * target_to_origin, dim=-1) - sampling_radius**2
         
         discriminant = b*b - 4*a*c
-        t = (-b + torch.sqrt(torch.clamp(discriminant, min=0))) / torch.clamp(2*a, min=1e-8)
+        # Calculate both roots
+        sqrt_discriminant = torch.sqrt(torch.clamp(discriminant, min=0))
+        t1 = (-b - sqrt_discriminant) / torch.clamp(2*a, min=1e-8)
+        t2 = (-b + sqrt_discriminant) / torch.clamp(2*a, min=1e-8)
+
+        # Choose the positive root that's closer to zero (front intersection)
+        t = torch.where(
+            (t1 > 0) & ((t1 < t2) | (t2 <= 0)),
+            t1,
+            torch.where(t2 > 0, t2, torch.zeros_like(t2))
+        )
         
         sphere_intersection = target_pos[:, :3] + t.unsqueeze(-1) * force_dir
         
@@ -344,3 +353,72 @@ def has_hit_da_g_spot(position_error: torch.Tensor, g_spot_radius: float) -> tor
     Check if the target position is within the g-spot radius
     """
     return torch.norm(position_error, dim=-1) < g_spot_radius
+
+
+# ============================================================================
+# THE 4 CORE REWARD FUNCTIONS FROM SUCCESSFUL REACH ENVIRONMENT
+# ============================================================================
+
+def position_command_error(curr_pos: torch.Tensor, target_pos: torch.Tensor) -> torch.Tensor:
+    """Penalize tracking of the position error using L2-norm.
+
+    The function computes the position error between the desired position and the
+    current position. The position error is computed as the L2-norm
+    of the difference between the desired and current positions.
+    
+    Args:
+        curr_pos: Current position [batch_size, 3]
+        target_pos: Target position [batch_size, 3]
+    
+    Returns:
+        L2 norm of position error [batch_size]
+    """
+    return torch.norm(curr_pos - target_pos, dim=1)
+
+
+def position_command_error_tanh(curr_pos: torch.Tensor, target_pos: torch.Tensor, std: float) -> torch.Tensor:
+    """Reward tracking of the position using the tanh kernel.
+
+    The function computes the position error between the desired position and the
+    current position and maps it with a tanh kernel.
+    
+    Args:
+        curr_pos: Current position [batch_size, 3]
+        target_pos: Target position [batch_size, 3]
+        std: Standard deviation for tanh scaling
+    
+    Returns:
+        Tanh reward [batch_size]
+    """
+    distance = torch.norm(curr_pos - target_pos, dim=1)
+    return 1 - torch.tanh(distance / std)
+
+
+def orientation_command_error(curr_quat: torch.Tensor, target_quat: torch.Tensor) -> torch.Tensor:
+    """Penalize tracking orientation error using shortest path.
+
+    The function computes the orientation error between the desired orientation and the
+    current orientation. The orientation error is computed as the shortest
+    path between the desired and current orientations.
+    
+    Args:
+        curr_quat: Current quaternion [batch_size, 4] as [qx, qy, qz, qw]
+        target_quat: Target quaternion [batch_size, 4] as [qx, qy, qz, qw]
+    
+    Returns:
+        Orientation error [batch_size]
+    """
+    return quat_error_magnitude(curr_quat, target_quat)
+
+
+def action_rate_l2(current_action: torch.Tensor, previous_action: torch.Tensor) -> torch.Tensor:
+    """L2 norm of action rate (current action - previous action).
+    
+    Args:
+        current_action: Current action [batch_size, action_dim]
+        previous_action: Previous action [batch_size, action_dim]
+    
+    Returns:
+        Action rate penalty [batch_size]
+    """
+    return torch.norm(current_action - previous_action, dim=1)

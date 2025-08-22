@@ -13,8 +13,7 @@ from isaaclab.utils.math import sample_uniform
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
-from .helper import clamp_actions, is_out_of_bound, get_keypoints, sample_target_point, sample_stiffness, setup_target_markers, setup_force_markers, v1_to_v2_quaternion
-from .helper import compute_self_collision_forces, sample_external_force,compute_spring_equilibrium_position, has_hit_da_g_spot
+from .helper import clamp_actions, is_out_of_bound, sample_target_point, setup_target_markers, get_keypoints
 from .helper import position_command_error, position_command_error_tanh, orientation_command_error, action_rate_l2
 
 class KochrlEnv(DirectRLEnv):
@@ -43,18 +42,11 @@ class KochrlEnv(DirectRLEnv):
         # Task
         self.sampled_target_pos = torch.zeros((self.num_envs, 7), device=self.device)
         self.target_err = torch.zeros((self.num_envs, 3), device=self.device)
+        self.target_keypoints = torch.zeros((self.num_envs, 9), device=self.device)
         self.target_keypoint_err = torch.zeros((self.num_envs, 9), device=self.device)
-        self.k_stiffness = torch.zeros((self.num_envs, 1), device=self.device)
-        self.sampling_forces = torch.zeros((self.num_envs, 3), device=self.device)
-        self.spring_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.has_external_force = torch.zeros((self.num_envs,), device=self.device, dtype=torch.bool)
-
         # Other
         self.prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
         self.actions = torch.zeros((self.num_envs, self.num_joints), device=self.device)
-        self.applied_torque = torch.zeros((self.num_envs, self.num_joints), device=self.device)
-        # self.action_buffer = torch.zeros((1, self.num_envs, self.num_joints), device=self.device)
-        # self.action_buffer_idx = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
         
         # Sample tracking
         self.samples_per_episode = self.cfg.sample_per_episode
@@ -62,10 +54,6 @@ class KochrlEnv(DirectRLEnv):
 
         # Visualization markers
         self.target_markers:VisualizationMarkers
-        self.force_markers:VisualizationMarkers
-
-        # Self-collision forces
-        self.self_collision_forces = torch.zeros((self.num_envs, 1), device=self.device)
 
         # Logging for the 4 reach environment rewards
         self._episode_sums = {
@@ -90,32 +78,12 @@ class KochrlEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
-        # Create contact sensors - one sensor per body, each monitoring against all other bodies
-        self.contact_sensors = {}
-        link_names = ["base_link", "link_1", "link_2", "link_3", "link_4", "link_5", "link_6"]
         
-        # Create all filter paths (all robot bodies)
-        all_robot_bodies = [f"/World/envs/env_.*/Robot/{name}" for name in link_names]
-        
-        for i, link_name in enumerate(link_names):
-            # Each sensor monitors ONE body against ALL robot bodies (including itself)
-            contact_sensor_cfg = ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",  # ONE sensor body
-                update_period=0.0,
-                history_length=1,
-                debug_vis=False,
-                filter_prim_paths_expr=all_robot_bodies,  # Against ALL robot bodies (1-to-many)
-            )
-            
-            sensor = ContactSensor(contact_sensor_cfg)
-            self.contact_sensors[link_name] = sensor
-            self.scene.sensors[f"contact_sensor_{i}"] = sensor
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
         # add markers
         self.target_markers = setup_target_markers()
-        self.force_markers = setup_force_markers()
         
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # self.actions = self.action_buffer[0]
@@ -147,11 +115,8 @@ class KochrlEnv(DirectRLEnv):
                 # Task params (13)
                 self.target_err,         # 3
                 self.target_keypoint_err,# 9
-                self.k_stiffness,        # 1
-
                 # Other (12)
                 self.prev_action,         # 6
-                self.applied_torque      # 6
             ),
             dim=-1,
         )
@@ -169,8 +134,8 @@ class KochrlEnv(DirectRLEnv):
         
         # 2. Position tracking reward (tanh)
         rew_position_tanh = position_command_error_tanh(
-            self.ee_body_pos[:, :3], 
-            self.sampled_target_pos[:, :3], 
+            self.keypoints,
+            self.target_keypoints,
             self.cfg.rew_position_tanh_std
         ) * self.cfg.rew_position_tanh_weight
         
@@ -212,66 +177,25 @@ class KochrlEnv(DirectRLEnv):
         
         # Task - compute errors
         self.target_err = self.ee_body_pos[:, :3] - self.sampled_target_pos[:, :3]
-        self.target_keypoint_err = self.keypoints - get_keypoints(self.sampled_target_pos)
-        
-        # Store previous action
-        self.applied_torque = self.robot.data.applied_torque
-
-        # Get self-collision forces
-        self.self_collision_forces = compute_self_collision_forces(self.contact_sensors)
-
+        self.target_keypoints = get_keypoints(self.sampled_target_pos)
+        self.target_keypoint_err = self.keypoints - self.target_keypoints
         # Resample target and stiffness at specified intervals
         current_step = self.episode_length_buf
         resample_mask = (current_step > 0) & ((current_step + 1) % self.steps_per_sample == 0)
         if (torch.any(resample_mask)):
             resample_list = torch.where(resample_mask)[0]
             # sample new targets for all environments
-            temp = sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device)
+            temp = torch.stack([
+                sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device) 
+                for _ in range(len(resample_list))
+            ])
             # print(f"Target point sampled: {temp}")
             # first 3 pos xyz
-            self.sampled_target_pos[resample_list, :3] = (self.scene.env_origins[resample_list] + temp[:3])
+            self.sampled_target_pos[resample_list, :3] = (self.scene.env_origins[resample_list] + temp[:, :3])
             # last 4 quat xyzw
-            self.sampled_target_pos[resample_list, 3:] = temp[3:]
-            # stiffness
-            self.k_stiffness[resample_list] = sample_stiffness(self.cfg.stiffness_range, len(resample_list)).to(self.device)
+            self.sampled_target_pos[resample_list, 3:] = temp[:, 3:]
             # update target markers
             self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
-            # force sampling - only for half the environments
-            force_mask = torch.rand(len(resample_list), device=self.device) < 0
-            has_force_envs = resample_list[force_mask]
-            no_force_envs = resample_list[~force_mask]
-            self.has_external_force[resample_list] = force_mask
-
-            # Sample forces only for selected environments
-            if len(has_force_envs) > 0:
-                print(f"[INFO]: Sampling forces for {len(has_force_envs)} environments")
-                self.sampling_forces[has_force_envs] = sample_external_force(
-                    self.cfg.force_range,
-                    len(has_force_envs),
-                    self.device
-                )
-                self.robot.set_external_force_and_torque(
-                    forces=self.sampling_forces[has_force_envs].unsqueeze(1), 
-                    torques=torch.zeros((len(has_force_envs), 3), device=self.device).unsqueeze(1), 
-                    body_ids=[self.ee_body_idx], 
-                    env_ids=has_force_envs
-                )
-
-            # Set force to zero for environments without external force
-            if len(no_force_envs) > 0:
-                self.sampling_forces[no_force_envs] = 0.0
-
-            # Compute spring target position
-            self.spring_target_pos = torch.where(
-                self.has_external_force.unsqueeze(-1),
-                compute_spring_equilibrium_position(
-                    self.sampled_target_pos, self.sampling_forces, self.k_stiffness,
-                    self.cfg.sampling_origin, self.cfg.sampling_radius
-                ),
-                self.sampled_target_pos[:, :3]  # Use target position when no force
-            )
-
-        self.force_markers.visualize(torch.stack([self.ee_body_pos[:, :3], self.sampled_target_pos[:, :3], self.spring_target_pos], dim=1).view(-1, 3), v1_to_v2_quaternion(torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.ee_body_pos.shape[0], 1), self.sampling_forces).repeat_interleave(3, dim=0), marker_indices=torch.tensor([0, 0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         
         # Check termination conditions
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -284,7 +208,6 @@ class KochrlEnv(DirectRLEnv):
         out_of_bounds = out_of_bounds | ee_below_ground
 
         # print out average norm self.keypoints error
-        avg_keypoint_err = torch.mean(torch.norm(self.target_keypoint_err, dim=-1))
         # print(f"[INFO]: Average keypoint error: {avg_keypoint_err.item():.4f}")
         # print(f"[INFO]: Average target error: {torch.mean(torch.norm(self.target_err, dim=-1)).item():.4f}")
         
@@ -307,57 +230,18 @@ class KochrlEnv(DirectRLEnv):
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
         self.joint_acc[env_ids] = 0.0
-        self.applied_torque[env_ids] = 0.0
         
         # Reset task parameters
-        temp = sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device)
-        # print(f"Target point sampled: {temp}")
-        for i, env_id in enumerate(env_ids):
-            # first 3 pos xyz
-            self.sampled_target_pos[env_id, :3] = (self.scene.env_origins[env_id] +  temp[:3])
-            # last 4 quat xyzw
-            self.sampled_target_pos[env_id, 3:] = temp[3:]
-        
-        self.k_stiffness[env_ids] = sample_stiffness(self.cfg.stiffness_range, len(env_ids)).to(self.device)
+        temp = torch.stack([
+                sample_target_point(self.cfg.sampling_origin, self.cfg.sampling_radius).to(self.device) 
+                for _ in range(len(env_ids))
+            ])
+        # first 3 pos xyz
+        self.sampled_target_pos[env_ids, :3] = (self.scene.env_origins[env_ids] + temp[:, :3])
+        # last 4 quat xyzw
+        self.sampled_target_pos[env_ids, 3:] = temp[:, 3:]
         # update target markers
         self.target_markers.visualize(self.sampled_target_pos[:, :3].repeat_interleave(2, dim=0), self.sampled_target_pos[:, 3:].repeat_interleave(2, dim=0), marker_indices=torch.tensor([0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
-        # force sampling - only for half the environments
-        force_mask = torch.rand(len(env_ids), device=self.device) < 0
-        has_force_envs = env_ids[force_mask]
-        no_force_envs = env_ids[~force_mask]
-        self.has_external_force[env_ids] = force_mask
-
-        # Sample forces only for selected environments
-        if len(has_force_envs) > 0:
-            print(f"[INFO]: Sampling forces for {len(has_force_envs)} environments")
-            self.sampling_forces[has_force_envs] = sample_external_force(
-                self.cfg.force_range,
-                len(has_force_envs),
-                self.device
-            )
-            self.robot.set_external_force_and_torque(
-                forces=self.sampling_forces[has_force_envs].unsqueeze(1), 
-                torques=torch.zeros((len(has_force_envs), 3), device=self.device).unsqueeze(1), 
-                body_ids=[self.ee_body_idx], 
-                env_ids=has_force_envs
-            )
-
-        # Set force to zero for environments without external force
-        if len(no_force_envs) > 0:
-            self.sampling_forces[no_force_envs] = 0.0
-
-        # Compute spring target position
-        self.spring_target_pos = torch.where(
-            self.has_external_force.unsqueeze(-1),
-            compute_spring_equilibrium_position(
-                self.sampled_target_pos, self.sampling_forces, self.k_stiffness,
-                self.cfg.sampling_origin, self.cfg.sampling_radius
-            ),
-            self.sampled_target_pos[:, :3]  # Use target position when no force
-        )
-        print(f"[INFO]: Spring target position: {self.spring_target_pos - self.scene.env_origins}")
-
-        self.force_markers.visualize(torch.stack([self.ee_body_pos[:, :3], self.sampled_target_pos[:, :3], self.spring_target_pos], dim=1).view(-1, 3), v1_to_v2_quaternion(torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.ee_body_pos.shape[0], 1), self.sampling_forces).repeat_interleave(3, dim=0), marker_indices=torch.tensor([0, 0, 1] * self.sampled_target_pos.shape[0], device=self.device, dtype=torch.int32))
         
         # Reset other states
         self.prev_action[env_ids] = 0.0
@@ -380,7 +264,6 @@ class KochrlEnv(DirectRLEnv):
         extras = dict()
         extras["Average keypoint error"] = torch.mean(torch.norm(self.target_keypoint_err, dim=1), dim=0).item()
         extras["Average target error"] = torch.mean(torch.norm(self.target_err, dim=1), dim=0).item()
-        extras["Average spring target error"] = torch.mean(torch.norm(self.spring_target_pos - self.ee_body_pos[:, :3], dim=1), dim=0).item()
         self.extras["log"].update(extras)
 
 

@@ -49,7 +49,7 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     force_range = [0.1, 10.0]  # N
     # - spaces definition
     action_space = 6
-    observation_space = 59
+    observation_space = 52
     state_space = 0
 
     # simulation
@@ -70,10 +70,10 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     joints = "joint_[1-6]"
    
     # THE 4 CORE REWARD PARAMETERS FROM SUCCESSFUL REACH ENVIRONMENT
-    rew_position_error_weight = -0.2     # L2 position error penalty
+    rew_position_error_weight = -0.2 / 3.0     # L2 position error penalty
     rew_position_tanh_weight = 0.1      # Tanh position reward
-    rew_position_tanh_std = 0.1          # Standard deviation for tanh
-    rew_orientation_error_weight = -0.0  # Orientation error penalty
+    rew_position_tanh_std = 0.3          # Standard deviation for tanh
+    rew_orientation_error_weight = 0  # Orientation error penalty
     rew_action_rate_weight = -0.0001     # Action rate penalty
  
     # - reset states/conditions

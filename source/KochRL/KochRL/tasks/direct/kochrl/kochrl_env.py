@@ -14,7 +14,7 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
 from .helper import clamp_actions, is_out_of_bound, sample_target_point, setup_target_markers, get_keypoints
-from .helper import position_command_error, position_command_error_tanh, orientation_command_error, action_rate_l2
+from .helper import position_command_error, position_command_error_tanh, orientation_command_error, action_rate_l2, action_acc_l2
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -47,6 +47,7 @@ class KochrlEnv(DirectRLEnv):
         # Other
         self.prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
         self.actions = torch.zeros((self.num_envs, self.num_joints), device=self.device)
+        self.prev_prev_action = torch.zeros((self.num_envs, self.num_joints), device=self.device)
         
         # Sample tracking
         self.samples_per_episode = self.cfg.sample_per_episode
@@ -63,6 +64,7 @@ class KochrlEnv(DirectRLEnv):
                 "rew_position_tanh",
                 "rew_orientation_error", 
                 "rew_action_rate",
+                "rew_action_acc",
                 "total_reward",
             ]
         }
@@ -88,6 +90,7 @@ class KochrlEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # self.actions = self.action_buffer[0]
         # self.action_buffer = torch.cat((self.action_buffer[1:], actions.unsqueeze(0)), dim=0)
+        self.prev_prev_action = self.prev_action.clone()
         self.prev_action = self.actions.clone()
         self.actions = actions.clone()
 
@@ -150,15 +153,23 @@ class KochrlEnv(DirectRLEnv):
             self.actions, 
             self.prev_action
         ) * self.cfg.rew_action_rate_weight
+
+        # 5. Action acc penalty
+        rew_action_acc = action_acc_l2(
+            self.actions, 
+            self.prev_action,
+            self.prev_prev_action
+        ) * self.cfg.rew_action_rate_weight
         
         # Total reward
-        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate
+        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate + rew_action_acc
         
         # Logging
         self._episode_sums["rew_position_error"] += rew_position_error
         self._episode_sums["rew_position_tanh"] += rew_position_tanh
         self._episode_sums["rew_orientation_error"] += rew_orientation_error
         self._episode_sums["rew_action_rate"] += rew_action_rate
+        self._episode_sums["rew_action_acc"] += rew_action_acc
         self._episode_sums["total_reward"] += total_reward
         
         return total_reward * self.step_dt

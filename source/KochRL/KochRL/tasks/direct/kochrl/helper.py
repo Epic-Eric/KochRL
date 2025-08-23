@@ -231,3 +231,16 @@ def action_rate_l2(current_action: torch.Tensor, previous_action: torch.Tensor) 
         Action rate penalty [batch_size]
     """
     return torch.norm(current_action - previous_action, dim=1)
+
+def action_acc_l2(current_action: torch.Tensor, previous_action: torch.Tensor, previous_previous_action) -> torch.Tensor:
+    """L2 norm of action rate (current action - 2 * previous action + previous_previous_action).
+    
+    Args:
+        current_action: Current action [batch_size, action_dim]
+        previous_action: Previous action [batch_size, action_dim]
+        previous_previous_action: Previous previous action [batch_size, action_dim]
+    
+    Returns:
+        Action rate penalty [batch_size]
+    """
+    return torch.norm(current_action - 2 * previous_action + previous_previous_action, dim=1)

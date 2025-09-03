@@ -75,6 +75,7 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     rew_position_tanh_std = 0.3          # Standard deviation for tanh
     rew_orientation_error_weight = 0  # Orientation error penalty
     rew_action_rate_weight = -0.0001     # Action rate penalty
+    rew_ee_acc_weight = -0.0005    # End-effector acceleration penalty
  
     # - reset states/conditions
     shoulder_pan_reset_angles = [-3.140, 3.140]

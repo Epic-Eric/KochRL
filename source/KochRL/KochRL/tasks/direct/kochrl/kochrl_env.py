@@ -37,6 +37,7 @@ class KochrlEnv(DirectRLEnv):
         self.ee_body_pos = torch.zeros((self.num_envs, 7), device=self.device)
         self.ee_linear_vel = torch.zeros((self.num_envs, 3), device=self.device)
         self.ee_angular_vel = torch.zeros((self.num_envs, 3), device=self.device)
+        self.ee_linear_acc = torch.zeros((self.num_envs, 3), device=self.device)
         self.keypoints = torch.zeros((self.num_envs, 9), device=self.device)
         
         # Task
@@ -64,7 +65,7 @@ class KochrlEnv(DirectRLEnv):
                 "rew_position_tanh",
                 "rew_orientation_error", 
                 "rew_action_rate",
-                "rew_action_acc",
+                "rew_ee_acc",
                 "total_reward",
             ]
         }
@@ -155,21 +156,17 @@ class KochrlEnv(DirectRLEnv):
         ) * self.cfg.rew_action_rate_weight
 
         # 5. Action acc penalty
-        rew_action_acc = action_acc_l2(
-            self.actions, 
-            self.prev_action,
-            self.prev_prev_action
-        ) * self.cfg.rew_action_rate_weight
+        rew_ee_acc = torch.norm(self.ee_linear_acc, dim=1) * self.cfg.rew_ee_acc_weight
         
         # Total reward
-        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate + rew_action_acc
+        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate + rew_ee_acc
         
         # Logging
         self._episode_sums["rew_position_error"] += rew_position_error
         self._episode_sums["rew_position_tanh"] += rew_position_tanh
         self._episode_sums["rew_orientation_error"] += rew_orientation_error
         self._episode_sums["rew_action_rate"] += rew_action_rate
-        self._episode_sums["rew_action_acc"] += rew_action_acc
+        self._episode_sums["rew_ee_acc"] += rew_ee_acc
         self._episode_sums["total_reward"] += total_reward
         
         return total_reward * self.step_dt
@@ -184,6 +181,7 @@ class KochrlEnv(DirectRLEnv):
         self.ee_body_pos = self.robot.data.body_pose_w[:, self.ee_body_idx, :]
         self.ee_linear_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, :3]
         self.ee_angular_vel = self.robot.data.body_vel_w[:, self.ee_body_idx, 3:]
+        self.ee_linear_acc = self.robot.data.body_acc_w[:, self.ee_body_idx, :3]
         self.keypoints = get_keypoints(self.ee_body_pos)
         
         # Task - compute errors
@@ -256,6 +254,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Reset other states
         self.prev_action[env_ids] = 0.0
+        self.prev_prev_action[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         # self.action_buffer_idx[env_ids] = torch.randint(1, 5, (len(env_ids),), device=self.device)
         

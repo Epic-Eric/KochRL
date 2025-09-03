@@ -202,24 +202,6 @@ def position_command_error_tanh(curr_pos: torch.Tensor, target_pos: torch.Tensor
     distance = torch.norm(curr_pos - target_pos, dim=1)
     return 1 - torch.tanh(distance / std)
 
-
-def orientation_command_error(curr_quat: torch.Tensor, target_quat: torch.Tensor) -> torch.Tensor:
-    """Penalize tracking orientation error using shortest path.
-
-    The function computes the orientation error between the desired orientation and the
-    current orientation. The orientation error is computed as the shortest
-    path between the desired and current orientations.
-    
-    Args:
-        curr_quat: Current quaternion [batch_size, 4] as [qx, qy, qz, qw]
-        target_quat: Target quaternion [batch_size, 4] as [qx, qy, qz, qw]
-    
-    Returns:
-        Orientation error [batch_size]
-    """
-    return quat_error_magnitude(curr_quat, target_quat)
-
-
 def action_rate_l2(current_action: torch.Tensor, previous_action: torch.Tensor) -> torch.Tensor:
     """L2 norm of action rate (current action - previous action).
     
@@ -231,16 +213,3 @@ def action_rate_l2(current_action: torch.Tensor, previous_action: torch.Tensor) 
         Action rate penalty [batch_size]
     """
     return torch.norm(current_action - previous_action, dim=1)
-
-def action_acc_l2(current_action: torch.Tensor, previous_action: torch.Tensor, previous_previous_action) -> torch.Tensor:
-    """L2 norm of action rate (current action - 2 * previous action + previous_previous_action).
-    
-    Args:
-        current_action: Current action [batch_size, action_dim]
-        previous_action: Previous action [batch_size, action_dim]
-        previous_previous_action: Previous previous action [batch_size, action_dim]
-    
-    Returns:
-        Action rate penalty [batch_size]
-    """
-    return torch.norm(current_action - 2 * previous_action + previous_previous_action, dim=1)

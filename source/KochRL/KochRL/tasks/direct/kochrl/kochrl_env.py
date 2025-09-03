@@ -14,7 +14,7 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 from .kochrl_env_cfg import KochrlEnvCfg
 from .helper import clamp_actions, is_out_of_bound, sample_target_point, setup_target_markers, get_keypoints
-from .helper import position_command_error, position_command_error_tanh, orientation_command_error, action_rate_l2, action_acc_l2
+from .helper import position_command_error, position_command_error_tanh, action_rate_l2
 
 class KochrlEnv(DirectRLEnv):
     cfg: KochrlEnvCfg
@@ -63,7 +63,6 @@ class KochrlEnv(DirectRLEnv):
             for key in [
                 "rew_position_error",
                 "rew_position_tanh",
-                "rew_orientation_error", 
                 "rew_action_rate",
                 "rew_ee_acc",
                 "total_reward",
@@ -132,8 +131,8 @@ class KochrlEnv(DirectRLEnv):
         
         # 1. Position error penalty (L2 norm)
         rew_position_error = position_command_error(
-            self.ee_body_pos[:, :3], 
-            self.sampled_target_pos[:, :3]
+            self.keypoints, 
+            self.target_keypoints
         ) * self.cfg.rew_position_error_weight
         
         # 2. Position tracking reward (tanh)
@@ -143,28 +142,21 @@ class KochrlEnv(DirectRLEnv):
             self.cfg.rew_position_tanh_std
         ) * self.cfg.rew_position_tanh_weight
         
-        # 3. Orientation error penalty
-        rew_orientation_error = orientation_command_error(
-            self.ee_body_pos[:, 3:7], 
-            self.sampled_target_pos[:, 3:7]
-        ) * self.cfg.rew_orientation_error_weight
-        
-        # 4. Action rate penalty
+        # 3. Action rate penalty
         rew_action_rate = action_rate_l2(
             self.actions, 
             self.prev_action
         ) * self.cfg.rew_action_rate_weight
 
-        # 5. Action acc penalty
+        # 4. Action acc penalty
         rew_ee_acc = torch.norm(self.ee_linear_acc, dim=1) * self.cfg.rew_ee_acc_weight
         
         # Total reward
-        total_reward = rew_position_error + rew_position_tanh + rew_orientation_error + rew_action_rate + rew_ee_acc
+        total_reward = rew_position_error + rew_position_tanh + rew_action_rate + rew_ee_acc
         
         # Logging
         self._episode_sums["rew_position_error"] += rew_position_error
         self._episode_sums["rew_position_tanh"] += rew_position_tanh
-        self._episode_sums["rew_orientation_error"] += rew_orientation_error
         self._episode_sums["rew_action_rate"] += rew_action_rate
         self._episode_sums["rew_ee_acc"] += rew_ee_acc
         self._episode_sums["total_reward"] += total_reward

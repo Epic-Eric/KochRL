@@ -70,10 +70,9 @@ class KochrlEnvCfg(DirectRLEnvCfg):
     joints = "joint_[1-6]"
    
     # THE 4 CORE REWARD PARAMETERS FROM SUCCESSFUL REACH ENVIRONMENT
-    rew_position_error_weight = -0.2 / 3.0     # L2 position error penalty
+    rew_position_error_weight = -0.2 / 3.0 / 2.0    # L2 position error penalty
     rew_position_tanh_weight = 0.1      # Tanh position reward
     rew_position_tanh_std = 0.3          # Standard deviation for tanh
-    rew_orientation_error_weight = 0  # Orientation error penalty
     rew_action_rate_weight = -0.0001     # Action rate penalty
     rew_ee_acc_weight = -0.0005    # End-effector acceleration penalty
  

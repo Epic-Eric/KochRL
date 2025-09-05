@@ -1,0 +1,33 @@
+import torch
+from pathlib import Path
+
+# Load your existing dataset
+root = "data"
+repo_id = "epiceric666/folding"
+local_dir = Path(root) / repo_id
+episodes_dir = local_dir / "episodes"
+
+# Get all episode files
+ep_files = sorted(list(episodes_dir.glob("episode_*.pth")))
+print(f"Found {len(ep_files)} episodes to process")
+
+# Check first episode to see what keys it has
+first_ep = torch.load(ep_files[0])
+print(f"First episode keys: {list(first_ep.keys())}")
+
+# Process all episodes to remove koch_cam key if present
+for i, ep_file in enumerate(ep_files):
+    ep_dict = torch.load(ep_file)
+    
+    # Remove koch_cam key if it exists
+    koch_cam_key = "observation.images.koch_cam"
+    if koch_cam_key in ep_dict:
+        print(f"Removing {koch_cam_key} from episode {i}")
+        del ep_dict[koch_cam_key]
+        
+        # Save the cleaned episode back
+        torch.save(ep_dict, ep_file)
+    else:
+        print(f"Episode {i} already clean (no {koch_cam_key})")
+
+print("All episodes cleaned!")

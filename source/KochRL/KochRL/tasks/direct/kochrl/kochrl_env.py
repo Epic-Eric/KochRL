@@ -100,7 +100,7 @@ class KochrlEnv(DirectRLEnv):
         
         # Set joint position targets
         self.robot.set_joint_position_target(self.clamped_targets, joint_ids=self._joints_idx)
-        print(self.actions)
+        # print(self.actions)
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
@@ -124,6 +124,26 @@ class KochrlEnv(DirectRLEnv):
             dim=-1,
         )
         observations = {"policy": obs}
+        torch.set_printoptions(sci_mode=False)
+        obs = observations["policy"][0].clone().tolist()  # convert tensor to list for easy slicing
+
+        sections = {
+            "Joint space (12)": [12],
+            "Cartesian space (22)": [7, 3, 3, 9],
+            "Task params (12)": [3, 9],
+            "Other (6)": [6],
+        }
+
+        idx = 0
+        print("Observations:")
+        for section, sizes in sections.items():
+            print(f"  {section}:")
+            for size in sizes:
+                part = obs[idx:idx+size]
+                part = [f"{x:.2f}" for x in part]
+                print(f"    {part}")
+                idx += size
+        print("--------------------------------")
         return observations
 
     def _get_rewards(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:

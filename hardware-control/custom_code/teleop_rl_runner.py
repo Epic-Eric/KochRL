@@ -315,6 +315,8 @@ def run_loop(
     # Simple velocity estimates via finite differences
     last_q = follower.get_arm_joint_angles()  # radians
     last_time = time.time()
+    last_ee_pos = None  # meters
+    last_ee_quat = None  # [x,y,z,w]
 
     # Build DH robot once (same kinematics for leader and follower)
     d1, a2, a3, d5 = 5.5, 10.68, 10.0, 10.5
@@ -336,6 +338,8 @@ def run_loop(
             Ti = dh_matrix(float(A[i]), float(ALPHA[i]), float(D[i]), float(q5[i] + OFFSET[i]))
             T = T @ Ti
         ee_pos = T[:3, 3] / 100.0 # convert to meters
+        # Correct axes: swap X and Y to match real-world convention
+        ee_pos = ee_pos[[1, 0, 2]]
         ee_quat_xyzw = rotmat_to_quat_xyzw(T[:3, :3])
         return np.hstack((ee_pos, ee_quat_xyzw)).astype(np.float32)
 
@@ -348,31 +352,58 @@ def run_loop(
         # Leader: compute EE pose via FK to define target
         leader_deg = leader.get_arm_joint_angles()
         leader_ee_pose = fk_ee_pose_from_leader_deg(leader_deg)  # [x,y,z,qx,qy,qz,qw]
-        # REAL TO SIM
-        leader_ee_pose[0:2] = leader_ee_pose[0:2][::-1]
+        leader_ee_pose = np.array([-0.0606,  0.0231,  0.1535, -0.0280, -0.7866,  0.2231,  0.5751])
 
         # Follower state
         q_rad = follower.get_arm_joint_angles()  # radians (6,)
 
         # Follower EE pose via FK (to avoid prints in follower.get_ee_pose)
         ee_pose = fk_ee_pose_from_q_rad(q_rad)
-        # REAL TO SIM
-        # swap ee_pose[0] and ee_pose[1]
-        ee_pose[0:2] = ee_pose[0:2][::-1]
 
-        # Velocities (finite difference for joints; EE vel zeros for simplicity)
-        qd_rad = (q_rad - last_q) / max(now - last_time, 1e-3)
-        ee_lin_vel = np.zeros(3, dtype=np.float32)
-        ee_ang_vel = np.zeros(3, dtype=np.float32)
+        # REAL TO SIM CONVERSION
+        q_rad = real_angle_to_sim_angle_radians(q_rad) # real to sim radian angle conversion
+
+        # Velocities (finite difference)
+        dt_loop = max(now - last_time, 1e-3)
+        qd_rad = (q_rad - last_q) / dt_loop
+        # Follower EE linear velocity (m/s)
+        if last_ee_pos is not None:
+            ee_lin_vel = ((ee_pose[:3] - last_ee_pos) / dt_loop).astype(np.float32)
+        else:
+            ee_lin_vel = np.zeros(3, dtype=np.float32)
+        # Follower EE angular velocity (rad/s) via quaternion delta
+        if last_ee_quat is not None:
+            q_prev = last_ee_quat
+            q_curr = ee_pose[3:7]
+            # quaternion multiply: q_delta = q_prev_conj * q_curr (xyzw)
+            x0,y0,z0,w0 = q_prev
+            x1,y1,z1,w1 = q_curr
+            # conjugate of prev
+            xc,yc,zc,wc = -x0, -y0, -z0, w0
+            # q_delta = conj(prev) * curr
+            xd = wc*x1 + xc*w1 + yc*z1 - zc*y1
+            yd = wc*y1 - xc*z1 + yc*w1 + zc*x1
+            zd = wc*z1 + xc*y1 - yc*x1 + zc*w1
+            wd = wc*w1 - xc*x1 - yc*y1 - zc*z1
+            v = np.array([xd, yd, zd], dtype=np.float64)
+            v_norm = np.linalg.norm(v)
+            if v_norm < 1e-9:
+                ee_ang_vel = np.zeros(3, dtype=np.float32)
+            else:
+                axis = (v / v_norm)
+                angle = 2.0 * np.arctan2(v_norm, wd)
+                # wrap to [-pi, pi]
+                if angle > np.pi:
+                    angle -= 2.0 * np.pi
+                ee_ang_vel = (axis * (angle / dt_loop)).astype(np.float32)
+        else:
+            ee_ang_vel = np.zeros(3, dtype=np.float32)
 
         # Keypoints and target errors (follower - leader)
         follower_kpts = compute_keypoints_np(ee_pose)
         leader_kpts = compute_keypoints_np(leader_ee_pose)
         target_err_xyz = ee_pose[:3] - leader_ee_pose[:3]
         target_keypoint_err = follower_kpts - leader_kpts
-
-        # REAL TO SIM CONVERSION
-        q_rad = real_angle_to_sim_angle_radians(q_rad) # real to sim radian angle conversion
 
 
         # Build observation and run policy
@@ -421,10 +452,10 @@ def run_loop(
             action_deg = action * 180.0 / np.pi
             debug_msg = (
                 "[DEBUG]\n"
-                f"  leader_xyz         : {np.round(leader_ee_pose[:3], 4).tolist()}\n"
+                # f"  leader_xyz         : {np.round(leader_ee_pose[:3], 4).tolist()}\n"
                 # f"  follower_q_rad     : {np.round(q_rad, 4).tolist()}\n"
                 # f"  follower_q_deg     : {np.round(follower_q_deg, 2).tolist()}\n"
-                f"  follower_ee_xyz    : {np.round(ee_pose[:3], 4).tolist()}\n"
+                # f"  follower_ee_xyz    : {np.round(ee_pose[:3], 4).tolist()}\n"
                 # f"  action_rad         : {np.round(action, 4).tolist()}\n"
                 # f"  action_deg         : {np.round(action_deg, 2).tolist()}\n"
                 # f"  q_target_deg       : {np.round(q_target_deg, 2).tolist()}\n"
@@ -434,12 +465,14 @@ def run_loop(
             pass
 
         # Send command
-        # follower.robot.follower_arms["main"].write("Goal_Position", degrees_to_device_units_deg(q_target_deg))
+        follower.robot.follower_arms["main"].write("Goal_Position", degrees_to_device_units_deg(np.concatenate([q_target_deg[:5], [leader_deg[5]]])))
 
         # Book-keeping and sleep to maintain rate
         prev_action = action
         last_q = q_rad
         last_time = now
+        last_ee_pos = ee_pose[:3].copy()
+        last_ee_quat = ee_pose[3:7].copy()
         # best-effort rate control
         sleep_time = dt - (time.time() - now)
         if sleep_time > 0:

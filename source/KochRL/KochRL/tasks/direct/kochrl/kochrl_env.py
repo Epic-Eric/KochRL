@@ -143,6 +143,7 @@ class KochrlEnv(DirectRLEnv):
                 part = [f"{x:.2f}" for x in part]
                 print(f"    {part}")
                 idx += size
+        print(self.ee_body_pos)
         print("--------------------------------")
         return observations
 

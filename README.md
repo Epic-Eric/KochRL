@@ -1,135 +1,224 @@
-# Template for Isaac Lab Projects
+## KochRL
 
-## Overview
+KochRL is an Isaac Lab-based reinforcement learning project for a 6-DoF Koch manipulator. It includes a custom Direct RL environment, PPO training/evaluation scripts, visualization helpers, and an optional hardware teleoperation runner to deploy trained policies on real robots.
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+* **Env ID**: `Template-Kochrl-Direct-v0`
+* **Stack**: Isaac Lab (Isaac Sim), PyTorch, RSL-RL (PPO)
+* **Package**: `KochRL` (installed from `source/KochRL`)
 
-**Key Features:**
+### Features
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+* **Custom Isaac Lab task** under `KochRL/tasks/direct/kochrl` with:
 
-**Keywords:** extension, template, isaaclab
+  * Target sampling within a hemispherical workspace
+  * Optional external force injection with spring-equilibrium clamping
+  * Keypoint-based observation of the end-effector
+  * Visualization markers for targets and forces
+* **Training/Eval scripts** via RSL-RL (`scripts/rsl_rl/`)
+* **Hardware teleop runner** to drive a follower arm from a trained policy (`hardware-control/custom_code/teleop_rl_runner.py`)
 
-## Installation
+---
+### Current branching
+main --- tested, reliable position matching in simulation
+actual-force --- dev branch for force position matching, simulation in progress, inference in progress
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda installation as it simplifies calling Python scripts from the terminal.
+## Quick Commands
 
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+### Train an agent with RSL-RL
 
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+```bash
+conda activate ericisaaclab
+cd ~/ericxie/KochRL/source/KochRL
+source ~/IsaacLab/_isaac_sim/setup_conda_env.sh
+python ../../scripts/rsl_rl/train.py --num_envs=4096 --task Template-Kochrl-Direct-v0 --headless --log_project_name kochrl-force
+```
 
-    ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/KochRL
+### Play with a trained agent
 
-- Verify that the extension is correctly installed by:
+```bash
+python ../../scripts/rsl_rl/play.py --task Template-Kochrl-Direct-v0 --num_envs=1
+```
 
-    - Listing the available tasks:
+### Resume training from a previous run
 
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
+```bash
+python ../../scripts/rsl_rl/train.py --num_envs=4096 --task Template-Kochrl-Direct-v0 --headless --log_project_name kochrl --load_run 2025-08-13_23-57-43 --resume
+```
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/list_envs.py
-        ```
+### Load a checkpoint and continue training with a new project name
 
-    - Running a task:
+```bash
+python ../../scripts/rsl_rl/train.py --num_envs=4096 --task Template-Kochrl-Direct-v0 --headless --log_project_name kochrl2 --load_run 2025-08-14_12-54-26 --checkpoint model_598.pt
+```
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
-        ```
+### Open Isaac Sim to edit USD files
 
-    - Running a task with dummy agents:
+```bash
+cd ~/IsaacLab/_isaac_sim
+bash isaac-sim.sh
+```
 
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
+### Inference (position only)
 
-        - Zero-action agent
+```bash
+conda activate erickoch
+cd hardware-control
+python custom_code/teleop_rl_runner.py --checkpoint /home/asblab/ericxie/KochRL/source/KochRL/logs/rsl_rl/kochrl/2025-09-03_14-34-46/model_999.pt --device cuda --rate 60
+```
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
+### Inference (force-based)
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
+```bash
+python /home/asblab/ericxie/KochRL/hardware-control/custom_code/teleop_force_runner.py --init-align --rate 60 --k 1000 --device cuda --predictor /home/asblab/ericxie/KochRL/force-predictor/xgb_force_model2.pkl
+```
 
-### Set up IDE (Optional)
+---
 
-To setup the IDE, please follow these instructions:
+## 1) Prerequisites
 
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
+* Python 3.10
+* Isaac Lab installed and working (follow the official [Isaac Lab installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html))
 
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
+  * Conda install is recommended for easy CLI use
+* NVIDIA GPU recommended
 
-### Setup as Omniverse Extension (Optional)
+## 2) Install KochRL
 
-We provide an example UI extension that will load upon enabling your extension defined in `source/KochRL/KochRL/ui_extension_example.py`.
+From the repo root:
 
-To enable your extension, follow these steps:
+```bash
+# Use Isaac Lab Python if it's not your default interpreter
+python -m pip install -e source/KochRL
+```
 
-1. **Add the search path of this project/repository** to the extension manager:
-    - Navigate to the extension manager using `Window` -> `Extensions`.
-    - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
-    - Click on the **Hamburger Icon**, then click `Refresh`.
+Verify the task is registered:
 
-2. **Search and enable your extension**:
-    - Find your extension under the `Third Party` category.
-    - Toggle it to enable your extension.
+```bash
+# Lists available tasks (looks for "Template-")
+python scripts/list_envs.py
+```
 
-## Code formatting
+You should see `Template-Kochrl-Direct-v0`.
 
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
+## 3) Train with PPO (RSL-RL)
+
+```bash
+# Minimal example
+python scripts/rsl_rl/train.py --task=Template-Kochrl-Direct-v0
+```
+
+* Training configs: `source/KochRL/KochRL/tasks/direct/kochrl/agents/rsl_rl_ppo_cfg.py`
+* Robot config: `source/KochRL/KochRL/tasks/direct/kochrl/koch.py`
+* Env config: `source/KochRL/KochRL/tasks/direct/kochrl/kochrl_env_cfg.py`
+* Logs and Hydra outputs: `source/KochRL/outputs/<DATE>/<TIME>/`
+* RSL-RL logs/checkpoints: `source/KochRL/logs/rsl_rl/kochrl/`
+
+Play/evaluate a checkpoint:
+
+```bash
+python scripts/rsl_rl/play.py --task=Template-Kochrl-Direct-v0 --checkpoint /path/to/checkpoint.pt
+```
+
+## 4) Dummy agents
+
+Quick functional tests without training:
+
+```bash
+# Zero-action agent
+python scripts/zero_agent.py --task=Template-Kochrl-Direct-v0
+
+# Random-action agent
+python scripts/random_agent.py --task=Template-Kochrl-Direct-v0
+```
+
+## 5) Environment overview
+
+* Implementation: `KochRL/tasks/direct/kochrl/kochrl_env.py`
+* Registration: `KochRL/tasks/direct/kochrl/__init__.py`
+* Helpers: `KochRL/tasks/direct/kochrl/helper.py`
+
+### Observations (high level)
+
+* Joint positions/velocities (6 + 6)
+* End-effector pose `[x, y, z, qx, qy, qz, qw]`
+* End-effector linear and angular velocities
+* Three EE keypoints (9 dims) derived from orientation to avoid discontinuities
+* Target errors (position and keypoints)
+* Stiffness parameter, previous action, applied torque
+
+Note: Exact layout and sizes are defined in `kochrl_env.py` and `kochrl_env_cfg.py`.
+
+### Actions
+
+* 6-dim delta joint positions, clamped to per-joint limits (`kochrl_env_cfg.py`).
+
+### Rewards (core components)
+
+* Position error penalty (L2 of keypoint error)
+* Position tracking reward (tanh kernel)
+* Action rate penalty (L2 of delta in actions)
+* End-effector acceleration penalty
+
+### Target sampling and forces
+
+* Targets sampled in a hemisphere around `sampling_origin` with `sampling_radius`
+* Optional external forces sampled randomly; equilibrium position computed and clamped within workspace
+
+## 6) Hardware teleoperation runner (optional)
+
+Use a trained policy to control a follower arm:
+
+```bash
+python hardware-control/custom_code/teleop_rl_runner.py \
+  --checkpoint /path/to/exported_or_training_checkpoint.pt \
+  --device cuda \
+  --rate 50 \
+  --init-align
+```
+
+* Requires hardware access and `lerobot` device stack
+* Builds KochRL-style observations, runs policy inference, and sends position targets to the follower
+* See file for serial ports and bus config: `hardware-control/custom_code/teleop_rl_runner.py`
+* Joint-limit mirroring and real↔sim angle conversions are handled inside the runner
+
+## 7) Development
+
+* Install pre-commit hooks:
 
 ```bash
 pip install pre-commit
-```
-
-Then you can run pre-commit with:
-
-```bash
 pre-commit run --all-files
 ```
 
-## Troubleshooting
+* Optional VSCode extension setup is described in the template README; you can mirror that by generating `.vscode/.python.env` to index Isaac modules.
 
-### Pylance Missing Indexing of Extensions
+## 8) Project structure
 
-In some VsCode versions, the indexing of part of the extensions is missing.
-In this case, add the path to your extension in `.vscode/settings.json` under the key `"python.analysis.extraPaths"`.
-
-```json
-{
-    "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/KochRL"
-    ]
-}
+```text
+source/KochRL/
+  KochRL/
+    tasks/
+      direct/kochrl/
+        agents/rsl_rl_ppo_cfg.py  # PPO config
+        helper.py                 # reward fns, sampling, quat utils
+        koch.py                   # robot/actuator config
+        kochrl_env.py             # Direct RL env (observations, rewards, resampling)
+        kochrl_env_cfg.py         # env config & limits
+    ui_extension_example.py
+scripts/
+  rsl_rl/train.py | play.py | cli_args.py
+  list_envs.py
+  zero_agent.py
+  random_agent.py
+hardware-control/custom_code/teleop_rl_runner.py
 ```
 
-### Pylance Crash
+## 9) Troubleshooting
 
-If you encounter a crash in `pylance`, it is probable that too many files are indexed and you run out of memory.
-A possible solution is to exclude some of omniverse packages that are not used in your project.
-To do so, modify `.vscode/settings.json` and comment out packages under the key `"python.analysis.extraPaths"`
-Some examples of packages that can likely be excluded are:
+* Ensure Isaac Lab is importable in the interpreter you use for `pip install -e`.
+* If indexing is slow or missing in IDEs, add `source/KochRL` to Python analysis extra paths.
+* For GPU rendering or physics issues, consult the official Isaac Lab docs and your Isaac Sim version compatibility.
 
-```json
-"<path-to-isaac-sim>/extscache/omni.anim.*"         // Animation packages
-"<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
-"<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
-"<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
-```
+## License
+
+This project is distributed under the MIT License (see `setup.py`).
